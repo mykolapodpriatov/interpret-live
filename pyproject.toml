@@ -1,0 +1,158 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "interpret-live"
+version = "0.1.0"
+description = "Real-time speech-to-speech translator with audio-stage LocalAgreement stabilization, barge-in, and one interface over cloud-realtime and fully-offline backends."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Mykola Podpriatov", email = "nsplotos@gmail.com" }]
+keywords = [
+    "speech-to-speech",
+    "translation",
+    "simultaneous-interpretation",
+    "streaming",
+    "asr",
+    "tts",
+    "barge-in",
+    "localagreement",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "typer>=0.12",
+    "rich>=13.0",
+    "pydantic>=2.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/mykolapodpriatov/interpret-live"
+Repository = "https://github.com/mykolapodpriatov/interpret-live"
+
+[project.scripts]
+interpret-live = "interpret_live.cli:app"
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0"]
+mt = ["transformers>=4.40", "torch>=2.2", "sentencepiece>=0.2"]
+piper = ["piper-tts>=1.2"]
+audio = ["sounddevice>=0.4"]
+openai = ["openai>=1.40"]
+gemini = ["google-genai>=0.3"]
+elevenlabs = ["elevenlabs>=1.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/interpret_live"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "B008",   # function call in default arg (typer uses this pattern)
+    "RUF001", # ambiguous unicode in strings (intentional: en-dash, CJK examples)
+    "RUF002", # ambiguous unicode in docstrings (intentional typography)
+    "RUF003", # ambiguous unicode in comments (intentional typography)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["interpret_live"]
+
+[tool.mypy]
+# 3.12 so mypy can parse the installed numpy stubs (which use the 3.12 `type`
+# statement); the package targets >=3.11 and is validated at runtime on the
+# 3.11/3.12/3.13 CI matrix.
+python_version = "3.12"
+strict = true
+# Off because the optional-backend override sections (faster_whisper, torch, …)
+# are only "used" when the corresponding extra is installed; on the default
+# install they would otherwise emit a cosmetic "unused section" note.
+warn_unused_configs = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+warn_return_any = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "faster_whisper.*",
+    "transformers.*",
+    "torch.*",
+    "piper.*",
+    "sounddevice.*",
+    "openai.*",
+    "google.*",
+    "elevenlabs.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-q"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["interpret_live"]
+omit = [
+    "src/interpret_live/backends/whisper.py",
+    "src/interpret_live/backends/nllb.py",
+    "src/interpret_live/backends/piper.py",
+    "src/interpret_live/backends/realtime.py",
+    "src/interpret_live/backends/gemini.py",
+    "src/interpret_live/backends/elevenlabs.py",
+    "src/interpret_live/audio_io.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+    "\\.\\.\\.",
+]
