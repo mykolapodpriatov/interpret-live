@@ -1,0 +1,75 @@
+{
+  "revision": "v1.0.0",
+  "source": "https://huggingface.co/rhasspy/piper-voices",
+  "license_note": "Voices are distributed by rhasspy/piper-voices; each voice's MODEL_CARD (license_url) states its dataset license.",
+  "defaults": {
+    "en": "en_US-lessac-medium",
+    "es": "es_ES-davefx-medium",
+    "de": "de_DE-thorsten-medium",
+    "fr": "fr_FR-siwis-medium",
+    "ru": "ru_RU-denis-medium",
+    "uk": "uk_UA-ukrainian_tts-medium"
+  },
+  "voices": {
+    "en_US-lessac-medium": {
+      "language": "en",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+      "model_sha256": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
+      "model_size": 63201294,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+      "config_sha256": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/en/en_US/lessac/medium/MODEL_CARD"
+    },
+    "es_ES-davefx-medium": {
+      "language": "es",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx",
+      "model_sha256": "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917",
+      "model_size": 63201294,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx.json",
+      "config_sha256": "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/es/es_ES/davefx/medium/MODEL_CARD"
+    },
+    "de_DE-thorsten-medium": {
+      "language": "de",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+      "model_sha256": "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819",
+      "model_size": 63201294,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json",
+      "config_sha256": "974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/de/de_DE/thorsten/medium/MODEL_CARD"
+    },
+    "fr_FR-siwis-medium": {
+      "language": "fr",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx",
+      "model_sha256": "641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99",
+      "model_size": 63201294,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx.json",
+      "config_sha256": "39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/fr/fr_FR/siwis/medium/MODEL_CARD"
+    },
+    "ru_RU-denis-medium": {
+      "language": "ru",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ru/ru_RU/denis/medium/ru_RU-denis-medium.onnx",
+      "model_sha256": "15fab56e11a097858ee115545d0f697fc2a316c41a291a5362349fb870411b0a",
+      "model_size": 63201294,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ru/ru_RU/denis/medium/ru_RU-denis-medium.onnx.json",
+      "config_sha256": "831c860dac0b5073eaa81610a0a638ec23d90a6cf8e5f871b4485c2cec3767c8",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/ru/ru_RU/denis/medium/MODEL_CARD"
+    },
+    "uk_UA-ukrainian_tts-medium": {
+      "language": "uk",
+      "sample_rate": 22050,
+      "model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/uk/uk_UA/ukrainian_tts/medium/uk_UA-ukrainian_tts-medium.onnx",
+      "model_sha256": "7920419ac5f6fd8b6450520f24b52ed5a319cb53dd018fbcd71c9e079cbac84f",
+      "model_size": 76735663,
+      "config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/uk/uk_UA/ukrainian_tts/medium/uk_UA-ukrainian_tts-medium.onnx.json",
+      "config_sha256": "4e96e72917ca9b94edc77d6ccfee03a73f450ba2fc1ca93c2e562bc014e5aa55",
+      "license_url": "https://huggingface.co/rhasspy/piper-voices/blob/v1.0.0/uk/uk_UA/ukrainian_tts/medium/MODEL_CARD"
+    }
+  }
+}

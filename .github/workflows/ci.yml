@@ -47,3 +47,31 @@ jobs:
             --cov=interpret_live \
             --cov-report=term-missing \
             --cov-fail-under=90
+
+  package:
+    name: wheel packaging (manifest discovery)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install wheel in a clean venv and discover the voice manifest
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/wheel-venv/bin/python -c "
+          from interpret_live.models import load_piper_manifest
+          manifest = load_piper_manifest()
+          assert manifest['voices'], 'piper_voices.json must ship in the wheel'
+          print('manifest voices:', ', '.join(sorted(manifest['voices'])))
+          "
