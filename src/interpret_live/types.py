@@ -111,10 +111,22 @@ class Hypothesis:
         is_final: ``True`` when the ASR considers this hypothesis final for the
             current utterance. On a final hypothesis the stabilizer
             force-commits the remaining tail and resets its window.
+        source_turn_id: The STT adapter's upstream turn identifier. Optional
+            for legacy/fake construction, but every live STT turn populates it
+            (identical on every partial/final of the same detected utterance)
+            so the pipeline can discard exactly the interrupted turn's stale
+            output and never a fresh turn's.
+        speech_started_at_ms: Immutable source speech onset (the first
+            VAD-positive input frame's timestamp, injected-clock domain),
+            repeated on every partial/final of the turn. Drives the
+            ``utterance_start`` metric so first-audio latency starts at actual
+            speech onset, not first-decode arrival.
     """
 
     tokens: tuple[Token, ...]
     is_final: bool = False
+    source_turn_id: str | None = None
+    speech_started_at_ms: int | None = None
 
     @classmethod
     def of(cls, *texts: str, is_final: bool = False, step_ms: int = 100) -> Hypothesis:
