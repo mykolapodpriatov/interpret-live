@@ -14,14 +14,23 @@ timestamps; debounce is measured from frame timestamps, never via real sleeps.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from .types import AudioFrame
 
-__all__ = ["VAD", "BargeInDetector", "EnergyVAD", "rms"]
+__all__ = [
+    "VAD",
+    "BargeInDetector",
+    "EndpointAction",
+    "EnergyVAD",
+    "UtteranceEndpointDetector",
+    "rms",
+]
 
 
 def rms(samples: np.ndarray) -> float:
@@ -165,3 +174,191 @@ class BargeInDetector:
         async for frame in frames:
             if self.feed(frame):
                 await on_barge_in(frame)
+
+
+@dataclass(frozen=True, slots=True)
+class EndpointAction:
+    """The endpoint detector's decision for one fed frame.
+
+    ``end_reason`` (if any) closes the *previous* turn **before** this frame is
+    considered, so a max-duration split followed by continued speech both ends
+    the old turn and starts the next one in a single :meth:`feed` call without
+    dropping the boundary frame.
+
+    Attributes:
+        end_reason: ``"silence"`` or ``"max_duration"`` when a turn just
+            ended; ``None`` otherwise.
+        started_turn_id: Set when a new turn begins at this frame.
+        onset_t_ms: The new turn's immutable speech onset — the timestamp of
+            its first VAD-positive frame (pre-roll frames come earlier but do
+            not define the onset).
+        frames: Frames to append to the *current* turn's utterance buffer (on
+            a start this includes the retained pre-roll).
+        partial_due: ``True`` when at least ``partial_interval_ms`` of new
+            turn audio accumulated since the last partial tick.
+    """
+
+    end_reason: str | None = None
+    started_turn_id: str | None = None
+    onset_t_ms: int | None = None
+    frames: tuple[AudioFrame, ...] = ()
+    partial_due: bool = False
+
+
+class UtteranceEndpointDetector:
+    """Deterministic utterance endpointing around a frame-level :class:`VAD`.
+
+    Owns turn lifecycle for the offline STT adapter: it retains ``pre_roll_ms``
+    of leading audio, starts a turn on the first VAD-positive frame, keeps
+    consuming the same live stream across turns, finalizes after
+    ``end_silence_ms`` of trailing silence or at ``max_utterance_ms``, and
+    paces partial-decode ticks every ``partial_interval_ms``. A max-duration
+    split during sustained speech starts the next turn immediately (the
+    boundary frame opens the new turn; nothing is dropped).
+
+    Note: when composed with an :class:`EnergyVAD` hangover, trailing silence
+    is measured *after* the hangover flips to silence, so the effective
+    end-of-utterance delay is ``hangover_ms + end_silence_ms``.
+
+    Args:
+        vad: Frame-level VAD used for speech classification.
+        pre_roll_ms: Leading audio retained before the detected onset.
+        partial_interval_ms: Minimum new-audio interval between partial ticks.
+        end_silence_ms: Trailing silence that finalizes a turn.
+        max_utterance_ms: Hard cap; a longer turn is split at this duration.
+    """
+
+    __slots__ = (
+        "_end_silence_ms",
+        "_in_turn",
+        "_max_utterance_ms",
+        "_onset_t_ms",
+        "_partial_acc_ms",
+        "_partial_interval_ms",
+        "_pre_roll",
+        "_pre_roll_ms",
+        "_silence_run_ms",
+        "_turn_count",
+        "_turn_ms",
+        "_vad",
+    )
+
+    def __init__(
+        self,
+        vad: VAD,
+        *,
+        pre_roll_ms: int = 200,
+        partial_interval_ms: int = 500,
+        end_silence_ms: int = 500,
+        max_utterance_ms: int = 30_000,
+    ) -> None:
+        if pre_roll_ms < 0:
+            raise ValueError(f"pre_roll_ms must be >= 0, got {pre_roll_ms}")
+        if partial_interval_ms <= 0:
+            raise ValueError(f"partial_interval_ms must be > 0, got {partial_interval_ms}")
+        if end_silence_ms < 0:
+            raise ValueError(f"end_silence_ms must be >= 0, got {end_silence_ms}")
+        if max_utterance_ms <= 0:
+            raise ValueError(f"max_utterance_ms must be > 0, got {max_utterance_ms}")
+        self._vad = vad
+        self._pre_roll_ms = pre_roll_ms
+        self._partial_interval_ms = partial_interval_ms
+        self._end_silence_ms = end_silence_ms
+        self._max_utterance_ms = max_utterance_ms
+        self._pre_roll: deque[AudioFrame] = deque()
+        self._in_turn = False
+        self._turn_count = 0
+        self._turn_ms = 0
+        self._silence_run_ms = 0
+        self._partial_acc_ms = 0
+        self._onset_t_ms = 0
+
+    @property
+    def in_turn(self) -> bool:
+        """``True`` while a turn is open (its buffer is accumulating)."""
+        return self._in_turn
+
+    def flush(self) -> str | None:
+        """Close an open turn at source EOF; returns ``"eof"`` if one closed."""
+        if not self._in_turn:
+            return None
+        self._reset_turn_state()
+        return "eof"
+
+    def _reset_turn_state(self) -> None:
+        self._in_turn = False
+        self._turn_ms = 0
+        self._silence_run_ms = 0
+        self._partial_acc_ms = 0
+        self._pre_roll.clear()
+
+    def _retain_pre_roll(self, frame: AudioFrame) -> None:
+        self._pre_roll.append(frame)
+        total = sum(f.duration_ms for f in self._pre_roll)
+        while self._pre_roll and total - self._pre_roll[0].duration_ms >= self._pre_roll_ms:
+            total -= self._pre_roll.popleft().duration_ms
+
+    def _start_turn(self, frame: AudioFrame) -> tuple[str, int, tuple[AudioFrame, ...]]:
+        self._turn_count += 1
+        self._in_turn = True
+        self._onset_t_ms = frame.t_ms
+        frames = (*self._pre_roll, frame)
+        self._pre_roll.clear()
+        self._turn_ms = sum(f.duration_ms for f in frames)
+        self._silence_run_ms = 0
+        self._partial_acc_ms = self._turn_ms
+        return f"turn-{self._turn_count}", frame.t_ms, frames
+
+    def feed(self, frame: AudioFrame) -> EndpointAction:
+        """Advance the state machine by one frame and return the decision."""
+        speech = self._vad.is_speech(frame)
+
+        if not self._in_turn:
+            if not speech:
+                self._retain_pre_roll(frame)
+                return EndpointAction()
+            turn_id, onset, frames = self._start_turn(frame)
+            return EndpointAction(
+                started_turn_id=turn_id,
+                onset_t_ms=onset,
+                frames=frames,
+                partial_due=self._take_partial_tick(),
+            )
+
+        # Inside a turn: a max-duration split ends the old turn *before* this
+        # frame, and continued speech immediately opens the next turn with the
+        # boundary frame (no artificial silence gap, no dropped frame).
+        if self._turn_ms + frame.duration_ms > self._max_utterance_ms:
+            self._reset_turn_state()
+            if speech:
+                turn_id, onset, frames = self._start_turn(frame)
+                return EndpointAction(
+                    end_reason="max_duration",
+                    started_turn_id=turn_id,
+                    onset_t_ms=onset,
+                    frames=frames,
+                    partial_due=self._take_partial_tick(),
+                )
+            self._retain_pre_roll(frame)
+            return EndpointAction(end_reason="max_duration")
+
+        self._turn_ms += frame.duration_ms
+        self._partial_acc_ms += frame.duration_ms
+        if speech:
+            self._silence_run_ms = 0
+            return EndpointAction(frames=(frame,), partial_due=self._take_partial_tick())
+
+        # Silence inside a turn: buffer it (it may be an intra-sentence pause)
+        # and finalize once enough trailing silence has accumulated.
+        self._silence_run_ms += frame.duration_ms
+        if self._silence_run_ms >= self._end_silence_ms:
+            self._reset_turn_state()
+            self._retain_pre_roll(frame)
+            return EndpointAction(end_reason="silence")
+        return EndpointAction(frames=(frame,), partial_due=self._take_partial_tick())
+
+    def _take_partial_tick(self) -> bool:
+        if self._partial_acc_ms >= self._partial_interval_ms:
+            self._partial_acc_ms = 0
+            return True
+        return False

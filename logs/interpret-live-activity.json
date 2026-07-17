@@ -1,0 +1,41 @@
+[
+  {
+    "id": "session-1782184761",
+    "timestamp": "2026-06-23T03:19:21.000000",
+    "type": "session",
+    "title": "Claude Code Session",
+    "summary": "Claude Code session on branch main",
+    "details": {
+      "project": "/Users/nikolaj/www/personal/github_projects/interpret-live",
+      "branch": "main",
+      "files_modified": "",
+      "stats": ""
+    }
+  },
+  {
+    "id": "session-1782195983",
+    "timestamp": "2026-06-23T06:26:23.000000",
+    "type": "session",
+    "title": "Claude Code Session",
+    "summary": "Claude Code session on branch main",
+    "details": {
+      "project": "/Users/nikolaj/www/personal/github_projects/interpret-live",
+      "branch": "main",
+      "files_modified": "",
+      "stats": ""
+    }
+  },
+  {
+    "id": "session-1782196153",
+    "timestamp": "2026-06-23T06:29:13.000000",
+    "type": "session",
+    "title": "Claude Code Session",
+    "summary": "Claude Code session on branch main",
+    "details": {
+      "project": "/Users/nikolaj/www/personal/github_projects/interpret-live",
+      "branch": "main",
+      "files_modified": "",
+      "stats": ""
+    }
+  }
+]

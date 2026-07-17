@@ -386,11 +386,11 @@ async def test_barge_in_through_detector_and_tee() -> None:
     # detector now requires before firing.
     silence = [
         AudioFrame(samples=np.zeros(320, dtype=np.float32), sample_rate=16000, t_ms=i * 20)
-        for i in range(2)
+        for i in range(6)
     ]
     loud = [
         AudioFrame(
-            samples=np.full(320, 0.5, dtype=np.float32), sample_rate=16000, t_ms=(2 + i) * 20
+            samples=np.full(320, 0.5, dtype=np.float32), sample_rate=16000, t_ms=(6 + i) * 20
         )
         for i in range(12)
     ]
@@ -403,7 +403,9 @@ async def test_barge_in_through_detector_and_tee() -> None:
         ]
     ]
     stt = FakeSTT(script, clock=clock, partial_delay_ms=40)
-    mt = FakeMT({"keep.": "sigue.", "talking.": "hablando."}, clock=clock, latency_ms=40)
+    # Slow MT keeps target work in flight across the onset window: barge-in is
+    # destructive only when there is target work to interrupt.
+    mt = FakeMT({"keep.": "sigue.", "talking.": "hablando."}, clock=clock, latency_ms=400)
     tts = FakeTTS(clock=clock, chunks=2, chunk_latency_ms=40)
     sink = FakeAudioSink(clock=clock)
     detector = BargeInDetector(EnergyVAD(threshold=0.02, hangover_ms=0), onset_ms=40, clock=clock)
@@ -660,3 +662,168 @@ def test_enqueue_tts_sentinel_never_blocks_on_full_queue() -> None:
         items.append(q.get_nowait())
     assert items[-1] is None, "stop-sentinel must be enqueued"
     assert None in items
+
+
+# ----- Task 2: source-onset timestamps, turn-aware rolls, barge-in gating ------
+
+
+def _hyp_turn(*words: str, turn: str, onset: int, final: bool = False) -> Hypothesis:
+    return Hypothesis(
+        tokens=make_tokens(list(words)),
+        is_final=final,
+        source_turn_id=turn,
+        speech_started_at_ms=onset,
+    )
+
+
+async def test_utterance_start_uses_source_speech_onset_timestamp() -> None:
+    clock = ManualClock()
+    # The hypothesis arrives at decode time (>= 40ms) but carries the true
+    # source onset (7 ms): the metric must use the onset, not arrival.
+    script = [
+        [
+            _hyp_turn("hi.", turn="turn-1", onset=7),
+            _hyp_turn("hi.", turn="turn-1", onset=7, final=True),
+        ]
+    ]
+    stt = FakeSTT(script, clock=clock, partial_delay_ms=40)
+    mt = FakeMT({"hi.": "hola."}, clock=clock, latency_ms=20)
+    tts = FakeTTS(clock=clock, chunks=1, chunk_latency_ms=10)
+    sink = FakeAudioSink(clock=clock)
+    pipe = Pipeline(stt=stt, mt=mt, tts=tts, sink=sink, clock=clock, config=PipelineConfig())
+
+    task = asyncio.ensure_future(pipe.run(_src(clock, 6).frames()))
+    await drain_then_advance(clock)
+    await task
+
+    starts = _events_of(pipe, "utterance_start")
+    assert starts and starts[0].t_ms == 7
+    # Latency derivation therefore includes decode delay: first audio happens
+    # strictly later than the onset-based start.
+    first_audio = _events_of(pipe, "first_tts_out")
+    assert first_audio and first_audio[0].t_ms > starts[0].t_ms
+
+
+class _TwoTurnGatedSTT:
+    """turn-1 partials, then (gated) turn-1 stale final + turn-2 final-only."""
+
+    def __init__(self, *, clock: ManualClock, gate: asyncio.Event) -> None:
+        self._clock = clock
+        self._gate = gate
+
+    async def _stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[Hypothesis]:
+        audio_iter = aiter(audio)
+
+        async def drain() -> None:
+            with contextlib.suppress(StopAsyncIteration):
+                await anext(audio_iter)
+
+        await drain()
+        await self._clock.sleep(40)
+        yield _hyp_turn("alpha.", turn="turn-1", onset=0)
+        await drain()
+        await self._clock.sleep(40)
+        yield _hyp_turn("alpha.", "beta.", turn="turn-1", onset=0)
+        # Hold the interrupted turn's stale final until the barge-in landed.
+        await self._gate.wait()
+        await self._clock.sleep(40)
+        yield _hyp_turn("alpha.", "beta.", turn="turn-1", onset=0, final=True)
+        await self._clock.sleep(40)
+        yield _hyp_turn("bravo.", turn="turn-2", onset=400, final=True)
+
+    def stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[Hypothesis]:
+        return self._stream(audio)
+
+
+async def test_new_turn_final_only_hypothesis_survives_barge_in() -> None:
+    clock = ManualClock()
+    gate = asyncio.Event()
+    stt = _TwoTurnGatedSTT(clock=clock, gate=gate)
+    mt = FakeMT(
+        {"alpha.": "a.", "beta.": "b.", "bravo.": "br."},
+        clock=clock,
+        latency_ms=120,  # slow: "alpha." is in flight when the barge-in fires
+    )
+    tts = FakeTTS(clock=clock, chunks=1, chunk_latency_ms=10)
+    sink = FakeAudioSink(clock=clock)
+    pipe = Pipeline(stt=stt, mt=mt, tts=tts, sink=sink, clock=clock, config=PipelineConfig())
+
+    task = asyncio.ensure_future(pipe.run(_src(clock, 8).frames()))
+    for _ in range(80):
+        await asyncio.sleep(0)
+        if any(seg.text == "alpha." for seg in mt.seen):
+            break
+        nxt = clock.next_wakeup_ms()
+        if nxt is not None:
+            clock.advance(nxt)
+    pipe._interrupt.fire()
+    for _ in range(40):
+        await asyncio.sleep(0)
+        if _events_of(pipe, "sink_stopped"):
+            break
+        nxt = clock.next_wakeup_ms()
+        if nxt is not None:
+            clock.advance(nxt)
+    gate.set()
+    await drain_then_advance(clock)
+    await task
+
+    texts = [seg.text for seg in mt.seen]
+    # The interrupted turn's stale final was dropped: "beta." never translated,
+    # "alpha." translated exactly once (its in-flight call, then cancelled).
+    assert "beta." not in texts
+    assert texts.count("alpha.") == 1
+    # The next turn's final-only hypothesis WAS translated, not mistaken for
+    # the interrupted turn's stale final.
+    assert "bravo." in texts
+    # And its utterance_start uses the new turn's source onset.
+    bravo_starts = [e for e in pipe.metrics.events if e.kind == "utterance_start" and e.t_ms == 400]
+    assert bravo_starts, "the fresh turn must start at its own source onset"
+
+
+async def test_speech_onset_with_no_target_work_is_not_destructive() -> None:
+    clock = ManualClock()
+    # The detector fires early (silence -> loud) while STT has produced nothing
+    # yet: there is no MT/TTS work and no audio to stop. The onset must be
+    # consumed silently — the (later) utterance must not abandon itself.
+    silence = [
+        AudioFrame(samples=np.zeros(320, dtype=np.float32), sample_rate=16000, t_ms=i * 20)
+        for i in range(2)
+    ]
+    loud = [
+        AudioFrame(
+            samples=np.full(320, 0.5, dtype=np.float32), sample_rate=16000, t_ms=(2 + i) * 20
+        )
+        for i in range(12)
+    ]
+    source = FakeAudioSource(silence + loud, clock=clock, frame_delay_ms=20)
+    script = [[hyp("hi."), hyp("hi.", is_final=True)]]
+    stt = FakeSTT(script, clock=clock, partial_delay_ms=600)  # first hyp long after onset
+    mt = FakeMT({"hi.": "hola."}, clock=clock, latency_ms=20)
+    tts = FakeTTS(clock=clock, chunks=1, chunk_latency_ms=10)
+    sink = FakeAudioSink(clock=clock)
+    detector = BargeInDetector(EnergyVAD(threshold=0.02, hangover_ms=0), onset_ms=40, clock=clock)
+    pipe = Pipeline(
+        stt=stt,
+        mt=mt,
+        tts=tts,
+        sink=sink,
+        clock=clock,
+        config=PipelineConfig(queue_maxsize=4),
+        barge_in=detector,
+    )
+
+    broadcaster, (stt_sub, barge_sub) = tee(source, 2, maxsize=4)
+
+    async def run() -> None:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(broadcaster.run(), name="bc")
+            tg.create_task(pipe.run_with_barge_in(stt_sub, barge_sub), name="pipe")
+
+    task = asyncio.ensure_future(run())
+    await drain_then_advance(clock)
+    await task
+
+    assert not _events_of(pipe, "interrupt"), "no target work -> no destructive barge-in"
+    assert sink.stop_count == 0
+    assert any(seg.text == "hi." for seg in mt.seen), "the utterance must not abandon itself"

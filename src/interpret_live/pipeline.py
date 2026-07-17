@@ -40,6 +40,7 @@ from .stabilize import LocalAgreementStabilizer
 from .types import (
     AudioFrame,
     AudioSink,
+    Hypothesis,
     MetricEvent,
     PlaybackGeneration,
     PlaybackHandle,
@@ -164,6 +165,15 @@ class Pipeline:
         # generation is issued.
         self._utt_generations: dict[str, PlaybackGeneration] = {}
         self._playback_watchers: dict[int, set[asyncio.Task[None]]] = {}
+        # Upstream (STT-adapter) turn tracking: the source turn currently being
+        # processed and the turns abandoned by a barge-in. A stale hypothesis is
+        # discarded only when its upstream turn ID matches an interrupted turn;
+        # the first hypothesis/final of the next detected turn always processes.
+        self._current_source_turn: str | None = None
+        self._abandoned_source_turns: set[str] = set()
+        # Playback handles still presenting (pruned opportunistically); used to
+        # gate barge-in on actually having target audio queued or playing.
+        self._live_handles: list[PlaybackHandle] = []
 
     @property
     def metrics(self) -> MetricsLog:
@@ -189,10 +199,29 @@ class Pipeline:
             )
         )
 
-    def _ensure_utterance_started(self) -> None:
+    def _ensure_utterance_started(self, hyp: Hypothesis) -> None:
+        """Record ``utterance_start`` at the actual source speech onset.
+
+        A live STT hypothesis carries ``speech_started_at_ms`` (the first
+        VAD-positive frame's timestamp), so first-audio latency starts at real
+        speech onset — not at first-decode arrival. Legacy fakes without the
+        field keep the current-clock behavior.
+        """
         if self._utterance_id not in self._started_utterances:
             self._started_utterances.add(self._utterance_id)
-            self._emit("utterance_start")
+            t_ms = (
+                hyp.speech_started_at_ms
+                if hyp.speech_started_at_ms is not None
+                else self._clock.now_ms()
+            )
+            self._metrics.append(
+                MetricEvent(
+                    kind="utterance_start",
+                    t_ms=t_ms,
+                    utterance_id=self._utterance_id,
+                    detail={},
+                )
+            )
 
     async def run(self, source_frames: AsyncIterator[AudioFrame]) -> None:
         """Drive the full pipeline over ``source_frames`` until exhausted.
@@ -240,15 +269,17 @@ class Pipeline:
                 # processing the next (post-interrupt) hypothesis. Only this stage
                 # mutates the stabilizer/segmenter, so the state stays race-free.
                 rolled = self._apply_pending_rolls()
-                if rolled and hyp.is_final:
-                    # This ``is_final`` belongs to the utterance the barge-in just
-                    # interrupted. The roll already reset the stabilizer/segmenter
-                    # and started a fresh utterance, so force-committing this stale
-                    # tail from index 0 would re-segment — and thus re-translate —
-                    # everything already emitted before the barge-in. Drop it: the
-                    # utterance boundary (the roll) is the only thing to honour.
+                if self._is_stale_hypothesis(hyp, rolled):
+                    # Output that still belongs to a barged-in turn. Committing
+                    # it into the fresh utterance would re-segment — and thus
+                    # re-translate — text emitted before the barge-in. The roll
+                    # is turn-aware: only the interrupted upstream turn's output
+                    # is dropped; the next detected turn always processes, even
+                    # when its very first hypothesis is already final.
                     continue
-                self._ensure_utterance_started()
+                if hyp.source_turn_id is not None:
+                    self._current_source_turn = hyp.source_turn_id
+                self._ensure_utterance_started(hyp)
                 disagree_before = self._stabilizer.post_commit_disagreement
                 result = self._stabilizer.commit(hyp)
                 if self._stabilizer.post_commit_disagreement > disagree_before:
@@ -279,13 +310,29 @@ class Pipeline:
 
         Returns ``True`` if at least one roll was applied in this call, so the
         caller can drop a stale ``is_final`` from the just-interrupted utterance.
+        Each applied roll also marks the source turn being processed at the
+        interrupt as abandoned, enabling turn-aware stale discarding.
         """
         applied = False
         while self._roll_done < self._roll_requests:
+            if self._current_source_turn is not None:
+                self._abandoned_source_turns.add(self._current_source_turn)
             self._roll_utterance()
             self._roll_done += 1
             applied = True
         return applied
+
+    def _is_stale_hypothesis(self, hyp: Hypothesis, rolled: bool) -> bool:
+        """Is ``hyp`` leftover output from a barged-in source turn?
+
+        With upstream turn IDs the check is exact: only output whose
+        ``source_turn_id`` matches an interrupted turn is stale. Legacy
+        hypotheses without IDs keep the previous heuristic (drop the final
+        that arrives immediately after a roll).
+        """
+        if hyp.source_turn_id is not None:
+            return hyp.source_turn_id in self._abandoned_source_turns
+        return rolled and hyp.is_final
 
     def _roll_utterance(self) -> None:
         """End the current utterance and reset stabilizer/segmenter offsets.
@@ -337,9 +384,11 @@ class Pipeline:
     ) -> _QueuedSegment | None:
         """Wait for the next segment, but handle a barge-in that arrives while idle.
 
-        If an interrupt fires while the supervisor is between segments (nothing in
-        flight), we still must stop the sink and discard anything queued so a late
-        onset during trailing playback is honoured.
+        If an interrupt fires while the supervisor is between segments, it is
+        destructive only when there is target work to interrupt — queued
+        segments/chunks or audio still presenting (e.g. trailing playback).
+        Ordinary speech after silence with no active target work is a new
+        turn, not an interrupt: the flag is consumed without a roll or stop.
         """
         while True:
             get_task = asyncio.create_task(seg_queue.get(), name="seg-get")
@@ -352,11 +401,26 @@ class Pipeline:
                 with contextlib.suppress(asyncio.CancelledError):
                     await interrupt_wait
                 return get_task.result()
-            # Interrupt fired while idle: stop playback, discard, re-arm, loop.
             get_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await get_task
-            await self._handle_barge_in(tts_queue, seg_queue, self._last_seg_utterance_id)
+            if self._target_work_active(seg_queue, tts_queue):
+                await self._handle_barge_in(tts_queue, seg_queue, self._last_seg_utterance_id)
+            else:
+                # Nothing to interrupt: a fresh utterance must not abandon
+                # itself. Consume the onset and keep waiting.
+                self._interrupt.clear()
+
+    def _target_work_active(
+        self,
+        seg_queue: asyncio.Queue[_QueuedSegment | None],
+        tts_queue: asyncio.Queue[TtsChunk | None],
+    ) -> bool:
+        """Is any target-language work queued, in flight, or still audible?"""
+        if seg_queue.qsize() or tts_queue.qsize():
+            return True
+        self._live_handles = [h for h in self._live_handles if not h.progress().completed]
+        return bool(self._live_handles)
 
     async def _synthesize_segment(
         self,
@@ -490,6 +554,8 @@ class Pipeline:
                 handle = await self._sink.schedule(generation, chunk)
             except PlaybackRejectedError:
                 continue  # the generation was stopped while we were blocked
+            self._live_handles = [h for h in self._live_handles if not h.progress().completed]
+            self._live_handles.append(handle)
             if chunk.utterance_id not in self._first_tts_seen_for:
                 self._first_tts_seen_for.add(chunk.utterance_id)
                 self._spawn_started_watcher(handle, chunk.utterance_id)

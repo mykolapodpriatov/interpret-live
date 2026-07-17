@@ -34,8 +34,11 @@ def _assert_fast_suite() -> Iterator[None]:
     yield
     elapsed = time.perf_counter() - start
     # Generous bound: real model/audio/network would blow far past this; a stray
-    # asyncio.sleep would accumulate visible wall-clock time.
-    assert elapsed < 5.0, (
+    # asyncio.sleep would accumulate visible wall-clock time. The budget allows
+    # for the deliberately wall-clock pieces of the suite — the real spawned
+    # model-worker lifecycle tests and the subprocess no-extras import check —
+    # while still catching runaway real waits in the deterministic core.
+    assert elapsed < 25.0, (
         f"suite wall-clock time {elapsed:.3f}s exceeds the determinism budget; "
         "a real sleep/wait likely leaked into the core or fakes"
     )

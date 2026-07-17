@@ -93,14 +93,16 @@ async def test_pipeline_session_with_barge_in_runs_via_tee() -> None:
     # Source opens with silence (arming the detector) then loud frames, which
     # drive the barge-in detector on the fanned-out copy. The leading silence
     # models the gap before the speaker resumes (now required to fire an onset).
-    a_frames = [frame(0.0, t_ms=i * 20, n=320) for i in range(2)] + [
-        frame(0.5, t_ms=(2 + i) * 20, n=320) for i in range(12)
+    a_frames = [frame(0.0, t_ms=i * 20, n=320) for i in range(6)] + [
+        frame(0.5, t_ms=(6 + i) * 20, n=320) for i in range(12)
     ]
     a_source = FakeAudioSource(a_frames, clock=clock, frame_delay_ms=20)
     sink = FakeAudioSink(clock=clock)
     script = [[hyp("keep."), hyp("keep.", "going."), hyp("keep.", "going.", is_final=True)]]
     stt = FakeSTT(script, clock=clock, partial_delay_ms=40)
-    mt = FakeMT({"keep.": "sigue.", "going.": "yendo."}, clock=clock, latency_ms=40)
+    # Slow MT keeps target work in flight across the onset window: barge-in is
+    # destructive only when there is target work to interrupt.
+    mt = FakeMT({"keep.": "sigue.", "going.": "yendo."}, clock=clock, latency_ms=400)
     tts = FakeTTS(clock=clock, chunks=2, chunk_latency_ms=40)
     backend = PipelineBackend(stt=stt, mt=mt, tts=tts)
     session = Session.create(
