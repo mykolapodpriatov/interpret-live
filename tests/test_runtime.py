@@ -9,6 +9,7 @@ cancellation cleanliness, and bounded shutdown even with a stuck worker.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import time
 from typing import Any
 
@@ -271,6 +272,10 @@ async def test_validation_failures_fire_before_any_construction() -> None:
 # ----- default (real) dependency constructors --------------------------------
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("faster_whisper") is not None,
+    reason="asserts no-extras install hints; extras are installed",
+)
 def test_default_deps_wiring_and_voice_selection(tmp_path: Any) -> None:
     import pytest as _pytest
 

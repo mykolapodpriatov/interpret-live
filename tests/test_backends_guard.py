@@ -52,6 +52,11 @@ def test_adapter_construction_without_extra_raises_clear_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Force the optional module import to fail, simulating a missing extra.
+    # Cached modules are dropped too, so this also holds when the extra IS
+    # installed (the optional-extra contract CI job runs with everything).
+    import importlib
+    import sys
+
     real_import = builtins.__import__
 
     def _fake_import(name: str, *args: object, **kwargs: object) -> object:
@@ -59,9 +64,10 @@ def test_adapter_construction_without_extra_raises_clear_error(
             raise ImportError(f"No module named {name!r}")
         return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
 
+    for cached in list(sys.modules):
+        if cached == module or cached.startswith(module + "."):
+            monkeypatch.delitem(sys.modules, cached)
     monkeypatch.setattr(builtins, "__import__", _fake_import)
-
-    import importlib
 
     mod_path, cls_name = backend_cls_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(mod_path), cls_name)

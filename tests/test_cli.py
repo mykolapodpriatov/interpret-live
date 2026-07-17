@@ -6,12 +6,28 @@ install hints (no live audio in CI); ``devices`` reports the missing-extra error
 
 from __future__ import annotations
 
+import importlib.util
+
+import pytest
 from typer.testing import CliRunner
 
 from interpret_live import __version__
 from interpret_live.cli import app
 
 runner = CliRunner()
+
+_no_whisper = pytest.mark.skipif(
+    importlib.util.find_spec("faster_whisper") is not None,
+    reason="asserts the no-extras install hint; whisper extra is installed",
+)
+_no_openai = pytest.mark.skipif(
+    importlib.util.find_spec("openai") is not None,
+    reason="asserts the no-extras install hint; openai extra is installed",
+)
+_no_audio = pytest.mark.skipif(
+    importlib.util.find_spec("sounddevice") is not None,
+    reason="asserts the no-extras install hint; audio extra is installed",
+)
 
 
 def test_bench_runs_and_prints_metrics() -> None:
@@ -35,6 +51,7 @@ def test_version_flag() -> None:
     assert __version__ in result.output
 
 
+@_no_whisper
 def test_run_offline_without_extras_fails_with_install_hint() -> None:
     # A real composition attempt now: with no extras installed, the runtime's
     # fail-fast extras check surfaces the clear install hint (exit 1) BEFORE
@@ -44,6 +61,7 @@ def test_run_offline_without_extras_fails_with_install_hint() -> None:
     assert "interpret-live[whisper]" in result.output
 
 
+@_no_openai
 def test_run_cloud_without_extras_fails_with_install_hint() -> None:
     result = runner.invoke(app, ["run", "--backend", "cloud"])
     assert result.exit_code == 1
@@ -75,6 +93,7 @@ def test_run_unknown_backend_exits_nonzero() -> None:
     assert "unknown backend" in result.output
 
 
+@_no_audio
 def test_devices_without_audio_extra_reports_clear_error() -> None:
     # In CI the 'audio' extra is not installed, so this surfaces the install hint
     # and exits non-zero (never a raw traceback).

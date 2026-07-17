@@ -331,3 +331,35 @@ async def test_s2s_session_dispatch_bypasses_stabilizer() -> None:
     await drain_then_advance(clock)
     await task
     assert len(sink.played) == 2
+
+
+async def test_gemini_scaffold_satisfies_the_shared_s2s_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    google = types.ModuleType("google")
+    genai = types.ModuleType("google.genai")
+
+    class _Client:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+    genai.Client = _Client  # type: ignore[attr-defined]
+    google.genai = genai  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+
+    from interpret_live.backends import S2S
+    from interpret_live.backends.gemini import GeminiS2S
+    from interpret_live.types import S2SInterruptTarget
+
+    scaffold = GeminiS2S(api_key="k")
+    # The migrated scaffold tracks the shared persistent protocol (also
+    # enforced statically by mypy) and keeps its clear not-implemented errors.
+    assert isinstance(scaffold, S2S)
+    with pytest.raises(NotImplementedError, match="Gemini Live session"):
+        scaffold.stream(_src(ManualClock(), 1).frames())
+    with pytest.raises(NotImplementedError, match="Gemini Live session"):
+        await scaffold.interrupt(S2SInterruptTarget(response_id="r-1"))

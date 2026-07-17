@@ -148,3 +148,87 @@ async def test_metrics_from_real_pipeline_run() -> None:
     u = report.utterances[0]
     assert u.first_audio_out_ms is not None and u.first_audio_out_ms > 0
     assert u.commit_lag_ms is not None and u.commit_lag_ms > 0
+
+
+# ----- deterministic multi-turn first-audio latency (both paths) ---------------
+
+
+async def test_offline_multi_turn_latency_from_scripted_onsets_and_presentation() -> None:
+    """Scripted source onsets + sink first-presentation timestamps yield exact
+    non-zero per-turn first_audio_out_ms including decode/MT/TTS delay."""
+    from helpers import make_tokens
+    from interpret_live.types import Hypothesis
+
+    clock = ManualClock()
+
+    def _turn_hyp(word: str, turn: str, onset: int, final: bool) -> Hypothesis:
+        return Hypothesis(
+            tokens=make_tokens([word]),
+            is_final=final,
+            source_turn_id=turn,
+            speech_started_at_ms=onset,
+        )
+
+    script = [
+        [_turn_hyp("uno.", "t1", 5, False), _turn_hyp("uno.", "t1", 5, True)],
+        [_turn_hyp("dos.", "t2", 115, False), _turn_hyp("dos.", "t2", 115, True)],
+    ]
+    stt = FakeSTT(script, clock=clock, partial_delay_ms=40)
+    mt = FakeMT({"uno.": "U", "dos.": "D"}, clock=clock, latency_ms=20)
+    tts = FakeTTS(clock=clock, chunks=1, chunk_latency_ms=10, ms_per_char=20)
+    sink = FakeAudioSink(clock=clock)
+    pipe = Pipeline(stt=stt, mt=mt, tts=tts, sink=sink, clock=clock)
+
+    frames = [frame(0.05, t_ms=i * 20, n=320) for i in range(10)]
+    source = FakeAudioSource(frames, clock=clock, frame_delay_ms=20)
+    task = asyncio.ensure_future(pipe.run(source.frames()))
+    await drain_then_advance(clock)
+    await task
+
+    report = pipe.metrics.report()
+    latencies = {
+        u.utterance_id: u.first_audio_out_ms
+        for u in report.utterances
+        if u.first_audio_out_ms is not None
+    }
+    # Deterministic pacing: the fake source paces one frame per 20 ms and the
+    # fake STT drains a frame + waits 40 ms per partial, so turn 1's final
+    # lands at 120 (commit) -> +20 MT -> +10 TTS => audible at 150, i.e.
+    # 145 ms after the scripted onset (5). Turn 2's final lands at 260 =>
+    # audible at 270, i.e. 155 ms after its onset (115). Both latencies are
+    # anchored at the scripted source onsets, not first-decode arrival.
+    assert latencies == {"utt-1": 145, "utt-2": 155}
+
+
+async def test_s2s_multi_turn_latency_includes_queued_playback_delay() -> None:
+    """Cloud path: onsets from provider events; the second turn's first audio
+    waits for the first turn's audio to finish presenting (honest latency)."""
+    from interpret_live.backends.fake import FakeS2S, FakeS2STurn
+    from interpret_live.s2s import S2SPipeline
+
+    clock = ManualClock()
+    s2s = FakeS2S(
+        clock=clock,
+        turns=[
+            FakeS2STurn(chunks=1, chunk_ms=100, speech_started_at_ms=0),
+            FakeS2STurn(chunks=1, chunk_ms=100, frames_before=2, speech_started_at_ms=60),
+        ],
+        chunk_latency_ms=30,
+    )
+    sink = FakeAudioSink(clock=clock)
+    pipe = S2SPipeline(s2s=s2s, sink=sink, clock=clock, config=PipelineConfig())
+
+    frames = [frame(0.05, t_ms=i * 20, n=320) for i in range(10)]
+    source = FakeAudioSource(frames, clock=clock, frame_delay_ms=20)
+    task = asyncio.ensure_future(pipe.run(source.frames()))
+    await drain_then_advance(clock)
+    await task
+
+    report = pipe.metrics.report()
+    latencies = [u.first_audio_out_ms for u in report.utterances]
+    assert len(latencies) == 2
+    assert all(latency is not None and latency > 0 for latency in latencies)
+    # Turn 1: frame at 20 -> chunk at 50, audible at 50 => 50 ms from onset 0.
+    # Turn 2: chunk ready at 110 but turn 1's 100 ms of audio presents until
+    # 150 -> audible at 150 => 90 ms from onset 60 (includes playback queueing).
+    assert latencies == [50, 90]
