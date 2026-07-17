@@ -269,7 +269,7 @@ class RealtimeS2S:
         self._voice = voice
         self._source_lang = source_lang
         self._target_lang = target_lang
-        self._clock = clock or RealClock()
+        self._clock: Clock | None = clock  # resolved lazily inside the running loop
         self._send_timeout_s = send_timeout_s
         self._vad_settle_ms = vad_settle_ms
         self._final_response_timeout_ms = final_response_timeout_ms
@@ -389,6 +389,8 @@ class RealtimeS2S:
 
     async def _stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[S2SEvent]:
         # Fresh per-session state (a new stream is a new provider session).
+        if self._clock is None:
+            self._clock = RealClock()  # needs the running loop; never in __init__
         self._eof = _EofState()
         self._audio_sent = False
         self._closing = False
@@ -510,6 +512,7 @@ class RealtimeS2S:
         if state == _EofState.SPEECH_PENDING:
             # Bounded VAD-settle window: the server may auto-commit the turn
             # while the receiver keeps processing.
+            assert self._clock is not None
             await self._clock.sleep(self._vad_settle_ms)
             async with self._state_lock:
                 if self._eof.state == _EofState.SPEECH_PENDING:
