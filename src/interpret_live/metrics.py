@@ -37,6 +37,22 @@ class UtteranceMetrics:
     retraction_count: int
     post_commit_disagreement: int
 
+    def to_dict(self) -> dict[str, str | int | None]:
+        """Return a JSON-serializable mapping of this utterance's metrics.
+
+        The schema is written out field by field (not ``asdict``-derived) so the
+        serialized contract is explicit and stable regardless of dataclass field
+        order or future additions.
+        """
+        return {
+            "utterance_id": self.utterance_id,
+            "first_audio_out_ms": self.first_audio_out_ms,
+            "commit_lag_ms": self.commit_lag_ms,
+            "barge_in_stop_ms": self.barge_in_stop_ms,
+            "retraction_count": self.retraction_count,
+            "post_commit_disagreement": self.post_commit_disagreement,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class MetricsReport:
@@ -57,6 +73,21 @@ class MetricsReport:
         """Worst (largest) barge-in-stop time across utterances."""
         vals = [u.barge_in_stop_ms for u in self.utterances if u.barge_in_stop_ms is not None]
         return max(vals) if vals else None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable mapping of the whole report.
+
+        Explicit schema (not ``asdict``-derived): per-utterance metrics plus the
+        aggregate totals and worst-case latencies, so the serialization is a
+        stable contract independent of the dataclass field/property layout.
+        """
+        return {
+            "utterances": [u.to_dict() for u in self.utterances],
+            "total_retractions": self.total_retractions,
+            "total_post_commit_disagreement": self.total_post_commit_disagreement,
+            "max_first_audio_out_ms": self.max_first_audio_out_ms,
+            "max_barge_in_stop_ms": self.max_barge_in_stop_ms,
+        }
 
 
 class MetricsLog:

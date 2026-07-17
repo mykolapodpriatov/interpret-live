@@ -7,6 +7,7 @@ install hints (no live audio in CI); ``devices`` reports the missing-extra error
 from __future__ import annotations
 
 import importlib.util
+import json
 
 import pytest
 from typer.testing import CliRunner
@@ -63,6 +64,63 @@ def test_bench_unknown_fixture_exits_two_listing_available() -> None:
     assert result.exit_code == 2
     assert "unknown fixture" in result.output
     assert "default-en-2sent" in result.output and "late-revision-en" in result.output
+
+
+def test_bench_json_parses_and_carries_the_documented_schema() -> None:
+    result = runner.invoke(
+        app, ["bench", "--json", "--fixture", "late-revision-en", "--agreement-n", "1"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)  # must be valid JSON, not Rich markup
+    assert payload["fixture"] == "late-revision-en"
+    assert payload["config"] == {"agreement_n": 1, "max_segment_tokens": 24}
+    assert payload["total_retractions"] == 0
+    assert payload["max_first_audio_out_ms"] is not None
+    assert payload["played_segments"] == [0, 0]
+    assert payload["utterances"][0]["post_commit_disagreement"] > 0  # n=1 misread shows up
+
+
+def test_bench_json_suppresses_the_rich_table() -> None:
+    result = runner.invoke(app, ["bench", "--json"])
+    assert result.exit_code == 0, result.output
+    # No table title, no Rich border glyphs, no markup fragments — pure JSON.
+    assert "interpret-live bench — fixture" not in result.output
+    assert "┏" not in result.output and "[bold" not in result.output
+    json.loads(result.output)
+
+
+def test_bench_json_is_byte_identical_across_runs() -> None:
+    """Pins the determinism claim: identical flags -> byte-identical payload."""
+    flags = ["bench", "--json", "--fixture", "late-revision-en", "--agreement-n", "1"]
+    first = runner.invoke(app, flags)
+    second = runner.invoke(app, flags)
+    assert first.exit_code == 0 and second.exit_code == 0
+    assert first.output == second.output
+
+
+def test_bench_json_preserves_retraction_exit_code_contract(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A retraction is still a hard failure (exit 1) under --json, with valid JSON."""
+    import numpy as np
+
+    import interpret_live.cli as cli_mod
+    from interpret_live.bench import BenchResult
+    from interpret_live.metrics import MetricsLog
+
+    log = MetricsLog()
+    log.record_retraction(1, utterance_id="utt-1")
+    fabricated = BenchResult(
+        report=log.report(),
+        played_samples=np.zeros(1, dtype=np.float32),
+        played_segments=(0,),
+    )
+
+    async def fake_run_bench(fixture, *, config=None):  # type: ignore[no-untyped-def]
+        return fabricated
+
+    monkeypatch.setattr(cli_mod, "run_bench", fake_run_bench)
+    result = runner.invoke(app, ["bench", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["total_retractions"] == 1
 
 
 def test_version_flag() -> None:

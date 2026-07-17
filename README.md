@@ -102,6 +102,45 @@ correct sentence is spoken, and the column is `0`. **Retractions stay `0` at
 both** because the committed prefix is monotonic: a late disagreement only bumps
 the tuning counter, it never un-commits already-spoken audio.
 
+### Machine-readable metrics (`--json`)
+
+Add `--json` to emit the metrics as a deterministic, markup-free JSON document
+(the Rich table is suppressed) so first-audio-out, commit-lag, and retractions
+can be diffed across commits or gated in CI. The exit code still contracts to `1`
+if any audio-stage retraction is observed.
+
+```bash
+interpret-live bench --json --fixture late-revision-en --agreement-n 1
+```
+
+```json
+{
+  "fixture": "late-revision-en",
+  "config": {
+    "agreement_n": 1,
+    "max_segment_tokens": 24
+  },
+  "played_segments": [0, 0],
+  "utterances": [
+    {
+      "utterance_id": "utt-1",
+      "first_audio_out_ms": 230,
+      "commit_lag_ms": 0,
+      "barge_in_stop_ms": null,
+      "retraction_count": 0,
+      "post_commit_disagreement": 2
+    }
+  ],
+  "total_retractions": 0,
+  "total_post_commit_disagreement": 2,
+  "max_first_audio_out_ms": 230,
+  "max_barge_in_stop_ms": null
+}
+```
+
+The harness is fully deterministic (a `ManualClock` with drain-then-advance), so
+the same flags produce a byte-identical payload every run.
+
 The same demo as a script lives at [`examples/bench_demo.py`](examples/bench_demo.py):
 
 ```bash
