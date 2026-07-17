@@ -415,6 +415,7 @@ class RealtimeS2S:
         )
         tasks = (pump_task, receiver_task, encoder_task)
         pending_tasks: set[asyncio.Task[None]] = set(tasks)
+        get_out: asyncio.Task[Any] | None = None
         try:
             while True:
                 get_out = asyncio.create_task(out_q.get(), name="realtime-out-get")
@@ -446,6 +447,10 @@ class RealtimeS2S:
                         await conn.close()
         finally:
             self._closing = True
+            if get_out is not None and not get_out.done():
+                get_out.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await get_out
             for task in (*tasks,):
                 if not task.done():
                     task.cancel()

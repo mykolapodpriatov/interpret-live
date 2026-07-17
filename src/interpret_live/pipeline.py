@@ -29,7 +29,7 @@ import asyncio
 import contextlib
 import functools
 from collections.abc import AsyncIterator
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from .backends import MT, STT, TTS
 from .clock import Clock
@@ -371,11 +371,18 @@ class Pipeline:
                     # so it is never translated under the resumed conversation.
                     continue
                 await self._synthesize_segment(qseg, tts_queue, seg_queue)
-        finally:
-            # Use a non-blocking enqueue so shutdown can never hang on a full
-            # tts_queue (e.g. playback stalled on a slow sink at teardown).
-            _enqueue_tts_sentinel(tts_queue)
-            await play_task
+        except BaseException:
+            # Cancellation/failure: never convert teardown into a normal EOF
+            # (the playback task would drain trailing audio that may never
+            # present again). Cancel it and await it instead.
+            play_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await play_task
+            raise
+        # Normal end-of-stream: deliver the stop sentinel (non-blocking so a
+        # full tts_queue can never hang shutdown) and let playback drain.
+        _enqueue_tts_sentinel(tts_queue)
+        await play_task
 
     async def _next_segment(
         self,
@@ -393,9 +400,7 @@ class Pipeline:
         while True:
             get_task = asyncio.create_task(seg_queue.get(), name="seg-get")
             interrupt_wait = asyncio.create_task(self._interrupt.wait(), name="interrupt-wait-idle")
-            done, _pending = await asyncio.wait(
-                {get_task, interrupt_wait}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done = await _wait_first(get_task, interrupt_wait)
             if get_task in done:
                 interrupt_wait.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -434,9 +439,7 @@ class Pipeline:
             self._translate_and_synthesize(qseg, tts_queue),
             name=f"seg-{qseg.segment.index}",
         )
-        done, _pending = await asyncio.wait(
-            {work, interrupt_wait}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done = await _wait_first(work, interrupt_wait)
         if interrupt_wait in done and not work.done():
             # Barge-in won the race: cancel in-flight work and await it.
             work.cancel()
@@ -542,27 +545,31 @@ class Pipeline:
         ``first_tts_out`` metric is emitted from the first handle's *started*
         receipt — first audible target audio, not first chunk received.
         """
-        while True:
-            chunk = await tts_queue.get()
-            if chunk is None:
-                break
-            if chunk.utterance_id in self._abandoned_utterances:
-                continue  # stale chunk from a barged-in utterance
-            generation = self._generation_for(chunk.utterance_id)
-            assert generation is not None
-            try:
-                handle = await self._sink.schedule(generation, chunk)
-            except PlaybackRejectedError:
-                continue  # the generation was stopped while we were blocked
-            self._live_handles = [h for h in self._live_handles if not h.progress().completed]
-            self._live_handles.append(handle)
-            if chunk.utterance_id not in self._first_tts_seen_for:
-                self._first_tts_seen_for.add(chunk.utterance_id)
-                self._spawn_started_watcher(handle, chunk.utterance_id)
-        # Normal EOF: present everything scheduled, then settle notifications.
-        await self._sink.drain()
-        for gen_seq in list(self._playback_watchers):
-            await self._settle_watchers(gen_seq)
+        try:
+            while True:
+                chunk = await tts_queue.get()
+                if chunk is None:
+                    break
+                if chunk.utterance_id in self._abandoned_utterances:
+                    continue  # stale chunk from a barged-in utterance
+                generation = self._generation_for(chunk.utterance_id)
+                assert generation is not None
+                try:
+                    handle = await self._sink.schedule(generation, chunk)
+                except PlaybackRejectedError:
+                    continue  # the generation was stopped while we were blocked
+                self._live_handles = [h for h in self._live_handles if not h.progress().completed]
+                self._live_handles.append(handle)
+                if chunk.utterance_id not in self._first_tts_seen_for:
+                    self._first_tts_seen_for.add(chunk.utterance_id)
+                    self._spawn_started_watcher(handle, chunk.utterance_id)
+            # Normal EOF: present everything scheduled before returning.
+            await self._sink.drain()
+        finally:
+            # Settle notification tasks on every exit path (including
+            # cancellation) so no watcher task is ever leaked.
+            for gen_seq in list(self._playback_watchers):
+                await self._settle_watchers(gen_seq)
 
     def _spawn_started_watcher(self, handle: PlaybackHandle, utterance_id: str) -> None:
         """Emit ``first_tts_out`` from the handle's started receipt (async)."""
@@ -617,6 +624,21 @@ def _discard_watcher(
 ) -> None:
     """Done-callback: drop a finished notification task from its registry."""
     watchers.get(seq, set()).discard(task)
+
+
+async def _wait_first(*tasks: asyncio.Task[Any]) -> set[asyncio.Task[Any]]:
+    """asyncio.wait(FIRST_COMPLETED) that never leaks its racers on cancel."""
+    try:
+        done, _pending = await asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED)
+        return done
+    except asyncio.CancelledError:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        raise
 
 
 def _drain(queue: asyncio.Queue[_T | None]) -> int:

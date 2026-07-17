@@ -151,11 +151,13 @@ async def test_dual_channel_create_helper_runs_both_directions() -> None:
     b_source = _src(clock, 6)
     a_sink = FakeAudioSink(clock=clock)
     b_sink = FakeAudioSink(clock=clock)
-    # A single backend instance used for both directions via the create helper.
-    backend = _pipeline_backend(clock, {"a b.": "X"})
+    # Each direction gets its OWN independently built backend instance.
+    backend_ab = _pipeline_backend(clock, {"a b.": "X"})
+    backend_ba = _pipeline_backend(clock, {"a b.": "Y"})
 
     dual = DualChannel.create(
-        backend=backend,
+        backend_a_to_b=backend_ab,
+        backend_b_to_a=backend_ba,
         a_source=a_source,
         a_sink=a_sink,
         b_source=b_source,
@@ -168,6 +170,21 @@ async def test_dual_channel_create_helper_runs_both_directions() -> None:
     await task
     reports = dual.metrics()
     assert len(reports) == 2
+
+
+def test_dual_channel_create_rejects_a_shared_backend_instance() -> None:
+    clock = ManualClock()
+    backend = _pipeline_backend(clock, {})
+    with pytest.raises(CapabilityError, match="independently built"):
+        DualChannel.create(
+            backend_a_to_b=backend,
+            backend_b_to_a=backend,  # the same stateful instance: rejected
+            a_source=_src(clock, 2),
+            a_sink=FakeAudioSink(clock=clock),
+            b_source=_src(clock, 2),
+            b_sink=FakeAudioSink(clock=clock),
+            clock=clock,
+        )
 
 
 # ----- Capability negotiation (fail early) ------------------------------------

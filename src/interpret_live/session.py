@@ -370,7 +370,8 @@ class DualChannel:
     def create(
         cls,
         *,
-        backend: Backend,
+        backend_a_to_b: Backend,
+        backend_b_to_a: Backend,
         a_source: AudioSource,
         a_sink: AudioSink,
         b_source: AudioSource,
@@ -379,9 +380,20 @@ class DualChannel:
         config: PipelineConfig | None = None,
         enable_barge_in: bool = False,
     ) -> DualChannel:
-        """Build a dual-channel pair, validating dual capability up front."""
+        """Build a dual-channel pair from two independently built backends.
+
+        The two directions must never share stateful STT/MT/TTS/provider
+        objects: each direction gets its own backend instance (capability
+        negotiation still runs per direction). Passing the same object twice
+        is rejected to prevent silent state sharing.
+        """
+        if backend_a_to_b is backend_b_to_a:
+            raise CapabilityError(
+                "dual mode requires two independently built backends; the same "
+                "stateful backend instance cannot serve both directions"
+            )
         a_to_b = Session.create(
-            backend=backend,
+            backend=backend_a_to_b,
             source=a_source,
             sink=b_sink,
             clock=clock,
@@ -390,7 +402,7 @@ class DualChannel:
             for_dual=True,
         )
         b_to_a = Session.create(
-            backend=backend,
+            backend=backend_b_to_a,
             source=b_source,
             sink=a_sink,
             clock=clock,

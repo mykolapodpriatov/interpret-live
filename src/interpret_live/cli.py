@@ -86,7 +86,22 @@ def run(
     backend: str = typer.Option(
         "offline", "--backend", help="Backend: 'offline' (pipeline) or 'cloud' (S2S)."
     ),
+    provider: str = typer.Option("openai", "--provider", help="Cloud provider (only 'openai')."),
     dual: bool = typer.Option(False, "--dual", help="Dual-channel meeting mode."),
+    whisper_model: str = typer.Option("small", "--whisper-model", help="faster-whisper alias."),
+    nllb_model: str | None = typer.Option(None, "--nllb-model", help="NLLB model id override."),
+    voice: str | None = typer.Option(
+        None, "--voice", help="Piper voice id/path speaking the TARGET language (offline)."
+    ),
+    voice_b: str | None = typer.Option(
+        None, "--voice-b", help="Piper voice speaking the SOURCE language (dual B->A)."
+    ),
+    openai_voice: str | None = typer.Option(
+        None, "--openai-voice", help="OpenAI Realtime output voice (cloud backend only)."
+    ),
+    openai_model: str | None = typer.Option(
+        None, "--openai-model", help="OpenAI Realtime model id override."
+    ),
     cache_dir: str | None = typer.Option(
         None, "--cache-dir", help="Model cache root (default: the platform cache dir)."
     ),
@@ -95,43 +110,90 @@ def run(
         "--offline",
         help="Never touch the network for local model resolution; fail if artifacts are missing.",
     ),
+    input_device: int | None = typer.Option(None, "--input-device", help="Mic device index."),
+    output_device: int | None = typer.Option(None, "--output-device", help="Speaker device index."),
+    input_device_b: int | None = typer.Option(
+        None, "--input-device-b", help="Speaker B's mic device index (dual)."
+    ),
+    output_device_b: int | None = typer.Option(
+        None, "--output-device-b", help="Speaker B's output device index (dual)."
+    ),
+    barge_in: bool = typer.Option(
+        True, "--barge-in/--no-barge-in", help="Interrupt playback when the speaker resumes."
+    ),
 ) -> None:
     """Run a live interpreting session (requires the relevant optional extras)."""
-    if backend == "cloud" and offline:
-        # --offline governs LOCAL model resolution; it is not a promise that a
-        # cloud provider works without a network. Reject before any client or
-        # device is constructed.
-        console.print(
-            "[red]--offline cannot be combined with --backend cloud: the cloud "
-            "path requires network access by definition[/]"
-        )
+    from .backends.guard import MissingExtraError
+    from .runtime import RuntimeConfigError, RuntimeOptions, run_session
+
+    # Provider-specific voice options must match the selected backend.
+    if backend == "offline" and openai_voice is not None:
+        console.print("[red]--openai-voice applies to the cloud backend only[/]")
         raise typer.Exit(code=2)
-    del cache_dir  # consumed by the runtime factory once Task 8 wires it
+    if backend == "cloud" and (voice is not None or voice_b is not None):
+        console.print("[red]--voice/--voice-b select Piper voices; use --openai-voice[/]")
+        raise typer.Exit(code=2)
+
+    opts = RuntimeOptions(
+        backend=backend,
+        provider=provider,
+        source_lang=source,
+        target_lang=target,
+        whisper_model=whisper_model,
+        nllb_model=nllb_model,
+        piper_voice=voice,
+        piper_voice_source=voice_b,
+        openai_model=openai_model,
+        openai_voice=openai_voice or "marin",
+        cache_dir=cache_dir,
+        offline=offline,
+        dual=dual,
+        input_device=input_device,
+        output_device=output_device,
+        input_device_b=input_device_b,
+        output_device_b=output_device_b,
+        enable_barge_in=barge_in,
+    )
     console.print(
         f"[bold]interpret-live run[/] {source} -> {target} (backend={backend}, dual={dual})"
     )
-    if backend == "offline":
-        hint = (
-            "The offline pipeline needs the whisper/mt/piper/audio extras:\n"
-            "  pip install 'interpret-live[whisper,mt,piper,audio]'"
+    try:
+        reports = asyncio.run(
+            run_session(
+                opts,
+                on_warning=lambda w: console.print(f"[yellow]warning:[/] {w}", highlight=False),
+            )
         )
-    elif backend == "cloud":
-        hint = (
-            "The cloud S2S path needs a provider extra:\n"
-            "  pip install 'interpret-live[openai]'  # or [gemini]"
-        )
-    else:
-        console.print(f"[red]unknown backend: {backend!r} (use 'offline' or 'cloud')[/]")
-        raise typer.Exit(code=2)
-    console.print(
-        "[yellow]Live audio I/O and heavy backends are optional extras.[/] "
-        "This build models the audio pipeline and ships deterministic fakes; "
-        "install the extras to run live:"
-    )
-    # Print the hint with markup disabled so the ``[extra]`` brackets are literal
-    # (rich would otherwise parse them as style tags and drop them).
-    console.print(hint, markup=False)
-    console.print("Tip: run [bold]interpret-live bench[/] for an offline, no-extras demo.")
+    except RuntimeConfigError as exc:
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=2) from exc
+    except MissingExtraError as exc:
+        console.print(str(exc), markup=False, style="red")
+        console.print("Tip: run [bold]interpret-live bench[/] for an offline, no-extras demo.")
+        raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt:
+        console.print("stopped.")
+        return
+    except Exception as exc:  # pragma: no cover - depends on live resources
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=1) from exc
+    # Success only after a session actually ran (or the user stopped it).
+    for index, report in enumerate(reports):
+        _print_report(report, title=f"direction {index + 1}" if len(reports) > 1 else "session")
+
+
+def _print_report(report: object, *, title: str) -> None:
+    """Print the concise final metrics summary after a normal stop."""
+    from .metrics import MetricsReport
+
+    assert isinstance(report, MetricsReport)
+    table = Table(title=f"metrics — {title}")
+    table.add_column("utterance", style="cyan")
+    table.add_column("first-audio-out (ms)", justify="right")
+    table.add_column("barge-in-stop (ms)", justify="right")
+    for u in report.utterances:
+        table.add_row(u.utterance_id, _fmt(u.first_audio_out_ms), _fmt(u.barge_in_stop_ms))
+    console.print(table)
 
 
 @app.command()

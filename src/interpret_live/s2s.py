@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import functools
 from collections.abc import AsyncIterator
+from typing import Any
 
 from .backends import S2S
 from .clock import Clock
@@ -246,9 +247,7 @@ class S2SPipeline:
         while True:
             get_task = asyncio.create_task(event_q.get(), name="s2s-event-get")
             interrupt_wait = asyncio.create_task(self._interrupt.wait(), name="s2s-int")
-            done, _pending = await asyncio.wait(
-                {get_task, interrupt_wait}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done = await _wait_first(get_task, interrupt_wait)
             if interrupt_wait in done and get_task not in done:
                 get_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -276,9 +275,7 @@ class S2SPipeline:
         while True:
             drain = asyncio.create_task(self._sink.drain(), name="s2s-drain")
             interrupt_wait = asyncio.create_task(self._interrupt.wait(), name="s2s-int-drain")
-            done, _pending = await asyncio.wait(
-                {drain, interrupt_wait}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done = await _wait_first(drain, interrupt_wait)
             if interrupt_wait in done and drain not in done:
                 drain.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -366,9 +363,7 @@ class S2SPipeline:
             self._sink.schedule(state.generation, chunk), name="s2s-schedule"
         )
         interrupt_wait = asyncio.create_task(self._interrupt.wait(), name="s2s-int-sched")
-        done, _pending = await asyncio.wait(
-            {schedule, interrupt_wait}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done = await _wait_first(schedule, interrupt_wait)
         if interrupt_wait in done and schedule not in done:
             await self._handle_barge_in()
             with contextlib.suppress(PlaybackRejectedError, asyncio.CancelledError):
@@ -507,3 +502,18 @@ def _discard_watcher(
 ) -> None:
     """Done-callback: drop a finished notification task from its registry."""
     watchers.get(seq, set()).discard(task)
+
+
+async def _wait_first(*tasks: asyncio.Task[Any]) -> set[asyncio.Task[Any]]:
+    """asyncio.wait(FIRST_COMPLETED) that never leaks its racers on cancel."""
+    try:
+        done, _pending = await asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED)
+        return done
+    except asyncio.CancelledError:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        raise
