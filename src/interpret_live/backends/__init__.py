@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
-from ..types import AudioFrame, Hypothesis, Segment, TtsChunk
+from ..types import AudioFrame, Hypothesis, S2SEvent, S2SInterruptTarget, Segment, TtsChunk
 
 __all__ = ["MT", "S2S", "STT", "TTS"]
 
@@ -73,22 +73,25 @@ class TTS(Protocol):
 
 @runtime_checkable
 class S2S(Protocol):
-    """Unified speech-to-speech: source audio → translated target audio.
+    """Unified speech-to-speech over one session-long provider connection.
 
     Models the cloud-realtime path (OpenAI Realtime / Gemini Live) that does
-    STT+MT+TTS internally. The harness does not see ASR partials on this path, so
-    audio-stage stabilization is the provider's responsibility (documented).
+    STT+MT+TTS internally. The harness does not see ASR partials on this path,
+    so audio-stage stabilization is the provider's responsibility (documented).
+
+    The stream is *persistent*: it consumes the continuous source and yields a
+    typed :data:`~interpret_live.types.S2SEvent` union — input speech
+    started/committed, response started, audio chunks with full response/item
+    provenance, content-audio done, and response done with status. Provider
+    server VAD creates responses; it never independently auto-cancels them —
+    the local interrupt path performs provider cancellation and conversation
+    truncation exactly once via :meth:`interrupt`.
     """
 
-    def stream(
-        self,
-        audio: AsyncIterator[AudioFrame],
-        *,
-        utterance_id: str,
-    ) -> AsyncIterator[TtsChunk]:
-        """Yield translated target-audio chunks for the incoming ``audio``."""
+    def stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[S2SEvent]:
+        """Yield typed provider events for the continuous source ``audio``."""
         ...
 
-    async def interrupt(self) -> None:
-        """Send the provider's cancel/interrupt to halt in-flight synthesis."""
+    async def interrupt(self, target: S2SInterruptTarget) -> None:
+        """Cancel exactly ``target.response_id`` (and truncate heard audio)."""
         ...

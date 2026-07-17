@@ -21,14 +21,28 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 
 import numpy as np
 
 from ..clock import Clock
-from ..types import AudioFrame, Hypothesis, Segment, TtsChunk
+from ..types import (
+    AudioFrame,
+    Hypothesis,
+    S2SAudioChunk,
+    S2SContentDone,
+    S2SEvent,
+    S2SInterruptTarget,
+    S2SResponseDone,
+    S2SResponseStarted,
+    S2SSpeechCommitted,
+    S2SSpeechStarted,
+    Segment,
+    TtsChunk,
+)
 from ..vad import VAD
 
-__all__ = ["FakeMT", "FakeS2S", "FakeSTT", "FakeTTS", "FakeVAD"]
+__all__ = ["FakeMT", "FakeS2S", "FakeS2STurn", "FakeSTT", "FakeTTS", "FakeVAD"]
 
 
 class FakeSTT:
@@ -187,69 +201,129 @@ class FakeTTS:
         return self._synthesize(text, segment_index=segment_index, utterance_id=utterance_id)
 
 
+@dataclass(frozen=True, slots=True)
+class FakeS2STurn:
+    """One scripted provider turn for :class:`FakeS2S`.
+
+    Attributes:
+        frames_before: Source frames consumed before speech-start is emitted.
+        chunks: Response audio chunks (each ``chunk_ms`` of audio).
+        chunk_ms: Duration of each chunk at the fake's sample rate.
+        status: Terminal ``response.done`` status when not interrupted.
+        speech_started_at_ms: Explicit source onset; defaults to clock now.
+        late_chunks_after_interrupt: Extra deltas emitted for this response
+            *after* it was interrupted (they must be discarded downstream).
+    """
+
+    frames_before: int = 1
+    chunks: int = 2
+    chunk_ms: int = 100
+    status: str = "completed"
+    speech_started_at_ms: int | None = None
+    late_chunks_after_interrupt: int = 0
+
+
 class FakeS2S:
-    """Scripted unified speech-to-speech: drains audio, emits scripted chunks.
+    """Scripted persistent speech-to-speech session (typed S2S events).
+
+    Models a session-long provider connection: multiple input turns and
+    responses, all control events and statuses, provider response/item
+    metadata, targeted cancellation acknowledgement (expected ``cancelled``
+    done), optional late old-response events, and post-interrupt output.
 
     Args:
-        chunks_per_utterance: How many target chunks to emit per utterance.
         clock: Injected clock for per-chunk pacing.
+        turns: Scripted turns; an int builds that many default turns.
         sample_rate: Output sample rate.
         chunk_latency_ms: Logical delay before each emitted chunk.
-        frames_before_output: Audio frames to consume before the first output
-            (models the provider buffering input before speaking).
     """
 
     def __init__(
         self,
         *,
-        chunks_per_utterance: int = 2,
         clock: Clock,
+        turns: int | list[FakeS2STurn] = 1,
         sample_rate: int = 16000,
         chunk_latency_ms: int = 40,
-        frames_before_output: int = 1,
     ) -> None:
-        self._chunks = chunks_per_utterance
         self._clock = clock
+        self._turns = (
+            [FakeS2STurn() for _ in range(turns)] if isinstance(turns, int) else list(turns)
+        )
         self._sample_rate = sample_rate
         self._chunk_latency_ms = chunk_latency_ms
-        self._frames_before_output = frames_before_output
-        self._interrupted = False
-        #: Number of times :meth:`interrupt` was called (asserted in tests).
-        self.interrupt_count = 0
+        self._interrupted: set[str] = set()
+        #: Every interrupt target received, in order (asserted in tests).
+        self.interrupt_targets: list[S2SInterruptTarget] = []
 
-    async def _stream(
-        self, audio: AsyncIterator[AudioFrame], *, utterance_id: str
-    ) -> AsyncIterator[TtsChunk]:
+    @property
+    def interrupt_count(self) -> int:
+        """How many provider-side interrupts were requested."""
+        return len(self.interrupt_targets)
+
+    async def _stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[S2SEvent]:
         audio_iter = aiter(audio)
-        for _ in range(self._frames_before_output):
-            try:
-                await anext(audio_iter)
-            except StopAsyncIteration:
-                break
-        for i in range(self._chunks):
-            if self._interrupted:
-                return
-            await self._clock.sleep(self._chunk_latency_ms)
-            samples = np.full(self._sample_rate // 10, 0.1, dtype=np.float32)
-            yield TtsChunk(
-                samples=samples,
-                sample_rate=self._sample_rate,
-                segment_index=i,
-                utterance_id=utterance_id,
-                final=(i == self._chunks - 1),
+        for index, turn in enumerate(self._turns, start=1):
+            item_id = f"item-{index}"
+            response_id = f"resp-{index}"
+            for _ in range(turn.frames_before):
+                try:
+                    await anext(audio_iter)
+                except StopAsyncIteration:
+                    return
+            onset = (
+                turn.speech_started_at_ms
+                if turn.speech_started_at_ms is not None
+                else self._clock.now_ms()
             )
+            yield S2SSpeechStarted(input_item_id=item_id, source_started_at_ms=onset)
+            yield S2SSpeechCommitted(input_item_id=item_id)
+            yield S2SResponseStarted(response_id=response_id, input_item_id=item_id)
+            samples_per_chunk = max(1, int(turn.chunk_ms * self._sample_rate / 1000))
+            cancelled = False
+            for i in range(turn.chunks):
+                if response_id in self._interrupted:
+                    cancelled = True
+                    break
+                await self._clock.sleep(self._chunk_latency_ms)
+                if response_id in self._interrupted:
+                    cancelled = True
+                    break
+                yield S2SAudioChunk(
+                    samples=np.full(samples_per_chunk, 0.1, dtype=np.float32),
+                    sample_rate=self._sample_rate,
+                    response_id=response_id,
+                    item_id=f"out-{index}",
+                    output_index=0,
+                    content_index=0,
+                    final=(i == turn.chunks - 1),
+                )
+            if cancelled:
+                # Late deltas from the already-cancelled response (must be
+                # discarded downstream), then the interrupt acknowledgement.
+                for _ in range(turn.late_chunks_after_interrupt):
+                    yield S2SAudioChunk(
+                        samples=np.full(samples_per_chunk, 0.1, dtype=np.float32),
+                        sample_rate=self._sample_rate,
+                        response_id=response_id,
+                        item_id=f"out-{index}",
+                        output_index=0,
+                        content_index=0,
+                        final=False,
+                    )
+                yield S2SResponseDone(response_id=response_id, status="cancelled")
+                continue
+            yield S2SContentDone(response_id=response_id, item_id=f"out-{index}", content_index=0)
+            yield S2SResponseDone(response_id=response_id, status=turn.status)
 
-    def stream(
-        self, audio: AsyncIterator[AudioFrame], *, utterance_id: str
-    ) -> AsyncIterator[TtsChunk]:
-        """Return the scripted target-audio stream for ``audio``."""
-        self._interrupted = False
-        return self._stream(audio, utterance_id=utterance_id)
+    def stream(self, audio: AsyncIterator[AudioFrame]) -> AsyncIterator[S2SEvent]:
+        """Return the scripted persistent event stream for ``audio``."""
+        return self._stream(audio)
 
-    async def interrupt(self) -> None:
-        """Mark the stream interrupted so it stops yielding further chunks."""
-        self._interrupted = True
-        self.interrupt_count += 1
+    async def interrupt(self, target: S2SInterruptTarget) -> None:
+        """Record the targeted cancellation and stop that response's output."""
+        self.interrupt_targets.append(target)
+        self._interrupted.add(target.response_id)
 
 
 class FakeVAD(VAD):
