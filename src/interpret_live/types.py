@@ -27,10 +27,38 @@ __all__ = [
     "Hypothesis",
     "MetricEvent",
     "MetricKind",
+    "PlaybackGeneration",
+    "PlaybackHandle",
+    "PlaybackProgress",
+    "PlaybackReceipt",
+    "PlaybackRejectedError",
     "Segment",
     "Token",
     "TtsChunk",
 ]
+
+
+def _validate_mono_samples(samples: NDArray[np.float32], *, owner: str) -> None:
+    """Validate the canonical in-process audio contract for ``samples``.
+
+    Canonical audio is mono, normalized ``float32`` in ``[-1.0, 1.0]``; PCM16 is
+    a wire/model-boundary encoding only (see :mod:`interpret_live.audio_codec`).
+    """
+    if not isinstance(samples, np.ndarray):
+        raise TypeError(f"{owner}.samples must be a numpy array, got {type(samples).__name__}")
+    if samples.dtype != np.float32:
+        raise ValueError(f"{owner}.samples must be float32, got {samples.dtype}")
+    if samples.ndim != 1:
+        raise ValueError(f"{owner}.samples must be one-dimensional (mono), got {samples.ndim}D")
+    if samples.size:
+        if not np.isfinite(samples).all():
+            raise ValueError(f"{owner}.samples must be finite (no NaN/inf)")
+        peak = float(np.abs(samples).max())
+        if peak > 1.0:
+            raise ValueError(
+                f"{owner}.samples must be normalized to [-1.0, 1.0]; peak was {peak:.6f} "
+                "(clip or rescale at the boundary that produced them)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +67,8 @@ class AudioFrame:
 
     Attributes:
         samples: ``float32`` samples in the range ``[-1.0, 1.0]`` (one channel).
-        sample_rate: Sampling rate in Hz (e.g. ``16000``).
+        sample_rate: Sampling rate in Hz (e.g. ``16000``); carried by every
+            frame because the canonical type is rate-annotated, not implied.
         t_ms: Logical timestamp of the *start* of this frame, in milliseconds,
             measured against the injected :class:`~interpret_live.clock.Clock`.
     """
@@ -48,11 +77,14 @@ class AudioFrame:
     sample_rate: int
     t_ms: int
 
+    def __post_init__(self) -> None:
+        _validate_mono_samples(self.samples, owner="AudioFrame")
+        if self.sample_rate <= 0:
+            raise ValueError(f"AudioFrame.sample_rate must be > 0, got {self.sample_rate}")
+
     @property
     def duration_ms(self) -> int:
         """Frame duration in milliseconds, derived from sample count + rate."""
-        if self.sample_rate <= 0:
-            return 0
         return round(1000 * len(self.samples) / self.sample_rate)
 
 
@@ -157,6 +189,16 @@ class TtsChunk:
     utterance_id: str
     final: bool = False
 
+    def __post_init__(self) -> None:
+        _validate_mono_samples(self.samples, owner="TtsChunk")
+        if self.sample_rate <= 0:
+            raise ValueError(f"TtsChunk.sample_rate must be > 0, got {self.sample_rate}")
+
+    @property
+    def duration_ms(self) -> int:
+        """Chunk duration in milliseconds, derived from sample count + rate."""
+        return round(1000 * len(self.samples) / self.sample_rate)
+
 
 MetricKind = Literal[
     "utterance_start",
@@ -198,19 +240,136 @@ class AudioSource(Protocol):
         ...
 
 
-@runtime_checkable
-class AudioSink(Protocol):
-    """An async sink that plays synthesized audio and can be stopped.
+class PlaybackRejectedError(RuntimeError):
+    """A ``schedule()`` was rejected because its generation was stopped.
 
-    ``stop()`` aborts the currently playing chunk and discards anything queued;
-    the moment ``stop()`` returns is the endpoint of the ``barge-in-stop``
-    metric.
+    Raised to callers blocked on (or validating for) sink capacity whose
+    :class:`PlaybackGeneration` has been invalidated by ``stop()``; the chunk
+    was **not** enqueued and must be discarded by the caller.
     """
 
-    async def play(self, chunk: TtsChunk) -> None:
-        """Play (or enqueue) one synthesized chunk."""
+
+@dataclass(frozen=True, slots=True)
+class PlaybackGeneration:
+    """An opaque, monotonically ordered token owning a run of sink playback.
+
+    The sink issues one generation per pipeline utterance / provider response
+    (:meth:`AudioSink.new_generation`). Only one generation may own the sink at
+    a time; ``stop(generation)`` invalidates exactly that generation.
+    """
+
+    seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlaybackProgress:
+    """An immutable snapshot of one scheduled chunk's presentation state.
+
+    Returned by handle notifications (:class:`PlaybackHandle`) and by
+    ``stop()`` snapshots. "Presented" counts only audio whose presentation
+    (DAC) time has passed in the injected clock domain — never samples that
+    are merely queued or sitting in a device buffer.
+
+    Attributes:
+        generation_seq: The owning :class:`PlaybackGeneration`'s sequence.
+        utterance_id: The utterance/response the chunk belongs to.
+        segment_index: The source segment index carried by the chunk.
+        chunk_seq: Scheduling ordinal of the chunk within its generation.
+        source_rate: Sample rate of the chunk as scheduled (source content).
+        source_samples_total: Total source samples in the chunk.
+        source_samples_presented: Source-equivalent samples audible so far.
+        device_rate: Output device rate the chunk was presented at.
+        device_frames_presented: Device frames audible so far.
+        first_audible_t_ms: Injected-clock time the first sample became
+            audible, or ``None`` if presentation never started.
+        interrupted: ``True`` when the chunk was cut short by ``stop()``.
+        completed: ``True`` when presentation finished (fully or interrupted).
+    """
+
+    generation_seq: int
+    utterance_id: str
+    segment_index: int
+    chunk_seq: int
+    source_rate: int
+    source_samples_total: int
+    source_samples_presented: int
+    device_rate: int
+    device_frames_presented: int
+    first_audible_t_ms: int | None
+    interrupted: bool
+    completed: bool
+
+
+#: A receipt is a resolved progress snapshot (started/completed notification).
+PlaybackReceipt = PlaybackProgress
+
+
+@runtime_checkable
+class PlaybackHandle(Protocol):
+    """The sink's per-chunk handle: notifications plus progress snapshots."""
+
+    @property
+    def chunk(self) -> TtsChunk:
+        """The scheduled chunk."""
         ...
 
-    async def stop(self) -> None:
-        """Abort the current chunk and discard queued audio immediately."""
+    @property
+    def generation(self) -> PlaybackGeneration:
+        """The generation that owns this chunk."""
+        ...
+
+    async def started(self) -> PlaybackProgress:
+        """Wait until the first sample is audible (or the chunk is stopped)."""
+        ...
+
+    async def completed(self) -> PlaybackProgress:
+        """Wait until presentation finished (fully played or interrupted)."""
+        ...
+
+    def progress(self) -> PlaybackProgress:
+        """Return the current immutable presentation snapshot."""
+        ...
+
+
+@runtime_checkable
+class AudioSink(Protocol):
+    """An async playback sink with generation-scoped scheduling and stop.
+
+    The playback contract (architecture decision: bounded, gapless, killable):
+
+    * ``schedule(generation, chunk)`` waits only for bounded sink capacity —
+      never for audible completion — so the next chunk can be buffered before
+      the current one ends (gapless lookahead). It validates the generation
+      before waiting and again under the sink lock immediately before enqueue,
+      raising :class:`PlaybackRejectedError` if the generation was stopped.
+    * Only one generation may own the sink at a time; a schedule for the next
+      generation waits until the previous generation drains or is stopped.
+    * ``stop(generation)`` invalidates that generation first (under the same
+      lock), atomically snapshots every affected handle's presented position,
+      aborts queued output through an independent control path, resolves
+      completions as interrupted, and wakes blocked schedules with a typed
+      rejection. The moment ``stop()`` returns is the ``barge-in-stop`` metric
+      endpoint.
+    * ``drain()`` awaits presentation of everything scheduled (normal EOF).
+    * ``aclose()`` is idempotent and releases the underlying device/tasks.
+    """
+
+    def new_generation(self) -> PlaybackGeneration:
+        """Issue the next monotonic playback generation token."""
+        ...
+
+    async def schedule(self, generation: PlaybackGeneration, chunk: TtsChunk) -> PlaybackHandle:
+        """Enqueue ``chunk`` under ``generation``; returns once buffered."""
+        ...
+
+    async def drain(self) -> None:
+        """Wait until every scheduled chunk has finished presenting."""
+        ...
+
+    async def stop(self, generation: PlaybackGeneration) -> tuple[PlaybackProgress, ...]:
+        """Stop ``generation`` immediately; return frozen progress snapshots."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release the sink's device/tasks (idempotent)."""
         ...

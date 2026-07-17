@@ -12,7 +12,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-__all__ = ["BackendKind", "Direction", "PipelineConfig", "SessionConfig"]
+__all__ = ["AudioConfig", "BackendKind", "Direction", "PipelineConfig", "SessionConfig"]
 
 
 class BackendKind(StrEnum):
@@ -53,6 +53,34 @@ class PipelineConfig(BaseModel):
     queue_maxsize: int = Field(default=8, ge=1)
 
 
+class AudioConfig(BaseModel):
+    """Validated real-audio device/edge configuration.
+
+    Attributes:
+        input_device: Input (microphone) device index; ``None`` = default.
+        output_device: Output (speaker) device index; ``None`` = default.
+        capture_rate: Microphone capture rate in Hz.
+        playback_rate: Output device rate in Hz; ``None`` = device default.
+        frame_ms: Capture frame duration in milliseconds.
+        mic_queue_frames: Bounded mic frame queue before drop-oldest applies.
+        playback_capacity: Maximum outstanding (scheduled) playback chunks.
+        playback_ring_ms: Speaker ring-buffer length in milliseconds.
+        playback_timeout_ms: Bound on individual playback operations.
+        shutdown_timeout_ms: Grace budget for closing devices/workers.
+    """
+
+    input_device: int | None = None
+    output_device: int | None = None
+    capture_rate: int = Field(default=16000, gt=0)
+    playback_rate: int | None = Field(default=None, gt=0)
+    frame_ms: int = Field(default=20, gt=0)
+    mic_queue_frames: int = Field(default=32, ge=1)
+    playback_capacity: int = Field(default=8, ge=1)
+    playback_ring_ms: int = Field(default=1000, gt=0)
+    playback_timeout_ms: int = Field(default=5000, ge=0)
+    shutdown_timeout_ms: int = Field(default=5000, ge=0)
+
+
 class SessionConfig(BaseModel):
     """Top-level session configuration.
 
@@ -61,9 +89,11 @@ class SessionConfig(BaseModel):
         target_lang: Target language code (e.g. ``"es"``).
         backend: Which backend family to use.
         pipeline: Nested :class:`PipelineConfig`.
+        audio: Nested :class:`AudioConfig` (real device edges).
     """
 
     source_lang: str = "en"
     target_lang: str = "es"
     backend: BackendKind = BackendKind.FAKE
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)

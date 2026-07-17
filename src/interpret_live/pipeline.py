@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 from collections.abc import AsyncIterator
 from typing import TypeVar
 
@@ -36,7 +37,16 @@ from .config import PipelineConfig
 from .metrics import MetricsLog
 from .segment import Segmenter
 from .stabilize import LocalAgreementStabilizer
-from .types import AudioFrame, AudioSink, MetricEvent, Segment, TtsChunk
+from .types import (
+    AudioFrame,
+    AudioSink,
+    MetricEvent,
+    PlaybackGeneration,
+    PlaybackHandle,
+    PlaybackRejectedError,
+    Segment,
+    TtsChunk,
+)
 from .vad import BargeInDetector
 
 __all__ = ["Pipeline"]
@@ -148,6 +158,12 @@ class Pipeline:
         # Owner of the most recent segment the supervisor pulled, so an idle
         # barge-in (no in-flight segment) can still mark the right utterance.
         self._last_seg_utterance_id: str | None = None
+        # Playback generations: one sink generation per utterance, plus the
+        # per-generation notification tasks (first-audible watchers) so a stop
+        # can cancel and await exactly the affected tasks before a fresh
+        # generation is issued.
+        self._utt_generations: dict[str, PlaybackGeneration] = {}
+        self._playback_watchers: dict[int, set[asyncio.Task[None]]] = {}
 
     @property
     def metrics(self) -> MetricsLog:
@@ -413,39 +429,96 @@ class Pipeline:
         self._emit("interrupt")
         if interrupted_utterance_id is not None:
             self._abandoned_utterances.add(interrupted_utterance_id)
+            # Ensure the interrupted utterance owns a generation even when no
+            # chunk reached the sink yet: invalidating it now guarantees a late
+            # chunk can never be scheduled under the interrupted turn.
+            self._generation_for(interrupted_utterance_id, create=True)
         # 1) Discard queued, not-yet-played chunks for the interrupted utterance.
         _drain(tts_queue)
         # 2) Discard queued, not-yet-synthesized segments for this utterance.
         _drain(seg_queue)
-        # 3) Stop the currently-playing chunk + flush; sink.stop() returning is
-        #    the barge-in-stop metric endpoint.
-        await self._sink.stop()
+        # 3) Stop every live playback generation (all pre-interrupt audio):
+        #    the sink invalidates each generation under its lock first, then we
+        #    cancel and await that generation's pending notification tasks so
+        #    nothing stale survives into the next generation. The final stop()
+        #    returning is the barge-in-stop metric endpoint.
+        for uid, gen in list(self._utt_generations.items()):
+            await self._sink.stop(gen)
+            await self._settle_watchers(gen.seq)
+            del self._utt_generations[uid]
         self._emit("sink_stopped")
         # 4) Ask the STT stage to start a NEW utterance with a fresh stabilizer.
         self._roll_requests += 1
         self._interrupt.clear()
 
+    def _generation_for(
+        self, utterance_id: str, *, create: bool = True
+    ) -> PlaybackGeneration | None:
+        """Return (creating if needed) the sink generation owning ``utterance_id``."""
+        gen = self._utt_generations.get(utterance_id)
+        if gen is None and create:
+            gen = self._sink.new_generation()
+            self._utt_generations[utterance_id] = gen
+        return gen
+
+    async def _settle_watchers(self, gen_seq: int) -> None:
+        """Cancel and await the notification tasks of one stopped generation."""
+        for task in self._playback_watchers.pop(gen_seq, set()):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     # ----- Stage 3: playback ---------------------------------------------------
 
     async def _playback(self, tts_queue: asyncio.Queue[TtsChunk | None]) -> None:
-        """Play synthesized chunks to the sink, recording first-audio-out."""
+        """Schedule synthesized chunks with bounded lookahead; drain at EOF.
+
+        ``schedule()`` waits only for bounded sink capacity, so the next chunk
+        is buffered before the current one finishes (gapless playback). The
+        ``first_tts_out`` metric is emitted from the first handle's *started*
+        receipt — first audible target audio, not first chunk received.
+        """
         while True:
             chunk = await tts_queue.get()
             if chunk is None:
-                return
+                break
+            if chunk.utterance_id in self._abandoned_utterances:
+                continue  # stale chunk from a barged-in utterance
+            generation = self._generation_for(chunk.utterance_id)
+            assert generation is not None
+            try:
+                handle = await self._sink.schedule(generation, chunk)
+            except PlaybackRejectedError:
+                continue  # the generation was stopped while we were blocked
             if chunk.utterance_id not in self._first_tts_seen_for:
                 self._first_tts_seen_for.add(chunk.utterance_id)
-                # first_tts_out must be attributed to the chunk's utterance, which
-                # may differ from the current id after a roll; emit explicitly.
-                self._metrics.append(
-                    MetricEvent(
-                        kind="first_tts_out",
-                        t_ms=self._clock.now_ms(),
-                        utterance_id=chunk.utterance_id,
-                        detail={"segment": chunk.segment_index},
-                    )
+                self._spawn_started_watcher(handle, chunk.utterance_id)
+        # Normal EOF: present everything scheduled, then settle notifications.
+        await self._sink.drain()
+        for gen_seq in list(self._playback_watchers):
+            await self._settle_watchers(gen_seq)
+
+    def _spawn_started_watcher(self, handle: PlaybackHandle, utterance_id: str) -> None:
+        """Emit ``first_tts_out`` from the handle's started receipt (async)."""
+
+        async def _watch() -> None:
+            receipt = await handle.started()
+            if receipt.first_audible_t_ms is None:
+                return  # stopped before ever becoming audible
+            self._metrics.append(
+                MetricEvent(
+                    kind="first_tts_out",
+                    t_ms=receipt.first_audible_t_ms,
+                    utterance_id=utterance_id,
+                    detail={"segment": handle.chunk.segment_index},
                 )
-            await self._sink.play(chunk)
+            )
+
+        task = asyncio.create_task(_watch(), name=f"first-tts-watch-{utterance_id}")
+        self._playback_watchers.setdefault(handle.generation.seq, set()).add(task)
+        task.add_done_callback(
+            functools.partial(_discard_watcher, self._playback_watchers, handle.generation.seq)
+        )
 
     # ----- Barge-in detection --------------------------------------------------
 
@@ -471,6 +544,13 @@ def _enqueue_tts_sentinel(tts_queue: asyncio.Queue[TtsChunk | None]) -> None:
         with contextlib.suppress(asyncio.QueueEmpty):
             tts_queue.get_nowait()
     tts_queue.put_nowait(None)
+
+
+def _discard_watcher(
+    watchers: dict[int, set[asyncio.Task[None]]], seq: int, task: asyncio.Task[None]
+) -> None:
+    """Done-callback: drop a finished notification task from its registry."""
+    watchers.get(seq, set()).discard(task)
 
 
 def _drain(queue: asyncio.Queue[_T | None]) -> int:

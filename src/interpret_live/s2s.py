@@ -12,13 +12,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 from collections.abc import AsyncIterator
 
 from .backends import S2S
 from .clock import Clock
 from .config import PipelineConfig
 from .metrics import MetricsLog
-from .types import AudioFrame, AudioSink, MetricEvent, TtsChunk
+from .types import (
+    AudioFrame,
+    AudioSink,
+    MetricEvent,
+    PlaybackGeneration,
+    PlaybackHandle,
+    PlaybackRejectedError,
+    TtsChunk,
+)
 from .vad import BargeInDetector
 
 __all__ = ["S2SPipeline"]
@@ -56,6 +65,8 @@ class S2SPipeline:
         self._utterance_id = self._new_utterance_id()
         self._interrupt = asyncio.Event()
         self._first_seen: set[str] = set()
+        self._utt_generations: dict[str, PlaybackGeneration] = {}
+        self._playback_watchers: dict[int, set[asyncio.Task[None]]] = {}
 
     @property
     def metrics(self) -> MetricsLog:
@@ -120,20 +131,71 @@ class S2SPipeline:
                 await interrupt_wait
             chunk = nxt.result()
             if chunk is None:
+                # Normal EOF: present everything scheduled, settle watchers.
+                await self._sink.drain()
+                for gen_seq in list(self._playback_watchers):
+                    await self._settle_watchers(gen_seq)
                 return
             await self._play(chunk)
 
     async def _play(self, chunk: TtsChunk) -> None:
+        """Schedule one provider chunk under its utterance's generation."""
+        generation = self._generation_for(chunk.utterance_id)
+        try:
+            handle = await self._sink.schedule(generation, chunk)
+        except PlaybackRejectedError:
+            return  # the generation was stopped while we were blocked
         if chunk.utterance_id not in self._first_seen:
             self._first_seen.add(chunk.utterance_id)
-            self._emit("first_tts_out", chunk.utterance_id)
-        await self._sink.play(chunk)
+            self._spawn_started_watcher(handle, chunk.utterance_id)
+
+    def _generation_for(self, utterance_id: str) -> PlaybackGeneration:
+        gen = self._utt_generations.get(utterance_id)
+        if gen is None:
+            gen = self._sink.new_generation()
+            self._utt_generations[utterance_id] = gen
+        return gen
+
+    def _spawn_started_watcher(self, handle: PlaybackHandle, utterance_id: str) -> None:
+        """Emit ``first_tts_out`` from the handle's started receipt (async)."""
+
+        async def _watch() -> None:
+            receipt = await handle.started()
+            if receipt.first_audible_t_ms is None:
+                return  # stopped before ever becoming audible
+            self._metrics.append(
+                MetricEvent(
+                    kind="first_tts_out",
+                    t_ms=receipt.first_audible_t_ms,
+                    utterance_id=utterance_id,
+                    detail={},
+                )
+            )
+
+        task = asyncio.create_task(_watch(), name=f"s2s-first-tts-watch-{utterance_id}")
+        self._playback_watchers.setdefault(handle.generation.seq, set()).add(task)
+        task.add_done_callback(
+            functools.partial(_discard_watcher, self._playback_watchers, handle.generation.seq)
+        )
+
+    async def _settle_watchers(self, gen_seq: int) -> None:
+        """Cancel and await the notification tasks of one generation."""
+        for task in self._playback_watchers.pop(gen_seq, set()):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def _handle_barge_in(self) -> None:
-        """Send the provider interrupt, stop the sink, record metrics."""
+        """Send the provider interrupt, stop playback generations, record metrics."""
         self._emit("interrupt")
         await self._s2s.interrupt()
-        await self._sink.stop()
+        # Ensure the current utterance owns a generation even if no chunk was
+        # scheduled yet, so a late chunk cannot be scheduled under it.
+        self._generation_for(self._utterance_id)
+        for uid, gen in list(self._utt_generations.items()):
+            await self._sink.stop(gen)
+            await self._settle_watchers(gen.seq)
+            del self._utt_generations[uid]
         self._emit("sink_stopped")
 
     async def _barge_in_stage(self, barge_frames: AsyncIterator[AudioFrame]) -> None:
@@ -143,6 +205,13 @@ class S2SPipeline:
             self._interrupt.set()
 
         await self._barge_in.watch(barge_frames, _on_onset)
+
+
+def _discard_watcher(
+    watchers: dict[int, set[asyncio.Task[None]]], seq: int, task: asyncio.Task[None]
+) -> None:
+    """Done-callback: drop a finished notification task from its registry."""
+    watchers.get(seq, set()).discard(task)
 
 
 async def _anext_or_none(it: AsyncIterator[TtsChunk]) -> TtsChunk | None:

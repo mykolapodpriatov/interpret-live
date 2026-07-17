@@ -15,7 +15,7 @@ optional extras behind import-guarded adapters.
 from __future__ import annotations
 
 from .clock import Clock, ManualClock, RealClock
-from .config import BackendKind, Direction, PipelineConfig, SessionConfig
+from .config import AudioConfig, BackendKind, Direction, PipelineConfig, SessionConfig
 from .metrics import MetricsLog, MetricsReport, UtteranceMetrics
 from .segment import Segmenter
 from .session import (
@@ -38,6 +38,11 @@ from .types import (
     CommitResult,
     Hypothesis,
     MetricEvent,
+    PlaybackGeneration,
+    PlaybackHandle,
+    PlaybackProgress,
+    PlaybackReceipt,
+    PlaybackRejectedError,
     Segment,
     Token,
     TtsChunk,
@@ -47,6 +52,7 @@ from .vad import BargeInDetector, EnergyVAD
 __version__ = "0.1.0"
 
 __all__ = [
+    "AudioConfig",
     "AudioFrame",
     "AudioSink",
     "AudioSource",
@@ -69,6 +75,11 @@ __all__ = [
     "PipelineBackend",
     "PipelineConfig",
     "PipelineSession",
+    "PlaybackGeneration",
+    "PlaybackHandle",
+    "PlaybackProgress",
+    "PlaybackReceipt",
+    "PlaybackRejectedError",
     "RealClock",
     "S2SBackend",
     "S2SSession",

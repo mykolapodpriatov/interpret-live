@@ -120,9 +120,9 @@ def run(
 def devices() -> None:
     """List available audio input/output devices (requires the 'audio' extra)."""
     try:
-        from .backends.guard import require
+        from .audio_io import list_devices
 
-        sd = require("sounddevice", backend="audio", extra="audio")
+        infos = list_devices()
     except ImportError as exc:
         # markup=False so the ``[audio]`` install hint is printed literally.
         console.print(str(exc), markup=False, style="red")
@@ -132,12 +132,21 @@ def devices() -> None:
     table.add_column("name")
     table.add_column("in", justify="right")
     table.add_column("out", justify="right")
-    for i, dev in enumerate(sd.query_devices()):  # pragma: no cover - needs hardware
+    table.add_column("default rate", justify="right")
+    table.add_column("default", justify="left")
+    for info in infos:
+        roles = []
+        if info.is_default_input:
+            roles.append("input")
+        if info.is_default_output:
+            roles.append("output")
         table.add_row(
-            str(i),
-            str(dev.get("name", "")),
-            str(dev.get("max_input_channels", 0)),
-            str(dev.get("max_output_channels", 0)),
+            str(info.index),
+            info.name,
+            str(info.max_input_channels),
+            str(info.max_output_channels),
+            f"{info.default_samplerate:g}",
+            ", ".join(roles),
         )
     console.print(table)
 
