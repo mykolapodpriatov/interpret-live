@@ -90,6 +90,11 @@ def _child_main(
         if message is None:
             break
         req_id, payload = message
+        # A cancel signal always targets the request that was in flight when it
+        # was set (the parent cancels only in-flight work). Clearing it at
+        # pickup keeps a late signal from insta-cancelling fresh work while
+        # still letting an in-flight handler observe its own cancellation.
+        cancel_event.clear()
         try:
             value = handler(payload, cancel_event)
             res_q.put(("ok", req_id, value))
