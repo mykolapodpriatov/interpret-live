@@ -65,3 +65,24 @@ def test_no_args_shows_help() -> None:
     result = runner.invoke(app, [])
     # no_args_is_help => usage shown, exit code 0 or 2 depending on typer version.
     assert "Usage" in result.output or "bench" in result.output
+
+
+def test_run_rejects_cloud_plus_offline_before_anything() -> None:
+    result = runner.invoke(app, ["run", "--backend", "cloud", "--offline"])
+    assert result.exit_code == 2
+    assert "--offline" in result.output and "cloud" in result.output
+
+
+def test_models_download_cloud_backend_needs_nothing() -> None:
+    result = runner.invoke(app, ["models", "download", "--backend", "cloud"])
+    assert result.exit_code == 0
+    assert "no local models" in result.output
+
+
+def test_models_download_offline_reports_missing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = runner.invoke(
+        app,
+        ["models", "download", "--offline", "--cache-dir", str(tmp_path), "--to", "es"],
+    )
+    assert result.exit_code == 1
+    assert "missing from the cache" in result.output

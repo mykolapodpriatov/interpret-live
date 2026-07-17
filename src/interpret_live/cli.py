@@ -87,8 +87,26 @@ def run(
         "offline", "--backend", help="Backend: 'offline' (pipeline) or 'cloud' (S2S)."
     ),
     dual: bool = typer.Option(False, "--dual", help="Dual-channel meeting mode."),
+    cache_dir: str | None = typer.Option(
+        None, "--cache-dir", help="Model cache root (default: the platform cache dir)."
+    ),
+    offline: bool = typer.Option(
+        False,
+        "--offline",
+        help="Never touch the network for local model resolution; fail if artifacts are missing.",
+    ),
 ) -> None:
     """Run a live interpreting session (requires the relevant optional extras)."""
+    if backend == "cloud" and offline:
+        # --offline governs LOCAL model resolution; it is not a promise that a
+        # cloud provider works without a network. Reject before any client or
+        # device is constructed.
+        console.print(
+            "[red]--offline cannot be combined with --backend cloud: the cloud "
+            "path requires network access by definition[/]"
+        )
+        raise typer.Exit(code=2)
+    del cache_dir  # consumed by the runtime factory once Task 8 wires it
     console.print(
         f"[bold]interpret-live run[/] {source} -> {target} (backend={backend}, dual={dual})"
     )
@@ -149,6 +167,90 @@ def devices() -> None:
             ", ".join(roles),
         )
     console.print(table)
+
+
+models_app = typer.Typer(
+    name="models",
+    help="Manage local model artifacts (explicit prefetch, cache inspection).",
+    no_args_is_help=True,
+)
+app.add_typer(models_app, name="models")
+
+
+@models_app.command("download")
+def models_download(
+    source: str = typer.Option("en", "--from", help="Source language code."),
+    target: str = typer.Option("es", "--to", help="Target language code."),
+    backend: str = typer.Option(
+        "offline", "--backend", help="Backend: only 'offline' has local artifacts."
+    ),
+    whisper_model: str = typer.Option("small", "--whisper-model", help="faster-whisper alias."),
+    nllb_model: str | None = typer.Option(None, "--nllb-model", help="NLLB model id override."),
+    voice: str | None = typer.Option(
+        None, "--voice", help="Piper voice id from the manifest (default: per target language)."
+    ),
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Model cache root."),
+    offline: bool = typer.Option(
+        False, "--offline", help="Verify cache only; never touch the network."
+    ),
+) -> None:
+    """Prefetch every artifact a run needs, with visible progress."""
+    from .models import (
+        NLLB_REPO,
+        ModelManager,
+        ModelResolutionError,
+        OfflineArtifactsMissingError,
+        PrefetchSpec,
+        load_piper_manifest,
+    )
+
+    if backend == "cloud":
+        console.print("The cloud backend keeps no local models; nothing to download.")
+        return
+    if backend != "offline":
+        console.print(f"[red]unknown backend: {backend!r} (use 'offline' or 'cloud')[/]")
+        raise typer.Exit(code=2)
+    del source  # language pair only selects the voice today; STT/MT are ids
+    manifest = load_piper_manifest()
+    voice_id = voice or manifest["defaults"].get(target)
+    if voice_id is None:
+        console.print(
+            f"[red]no default Piper voice for target language {target!r}; "
+            f"pass --voice (available: {', '.join(sorted(manifest['voices']))})[/]"
+        )
+        raise typer.Exit(code=2)
+    manager = ModelManager(
+        cache_dir=cache_dir,
+        offline=offline,
+        progress=lambda line: console.print(line, markup=False, highlight=False),
+    )
+    spec = PrefetchSpec(
+        whisper_model=whisper_model,
+        nllb_model=nllb_model or NLLB_REPO,
+        piper_voice=voice_id,
+    )
+    try:
+        resolved = manager.resolve_all(spec)
+    except OfflineArtifactsMissingError as exc:
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=1) from exc
+    except ModelResolutionError as exc:
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=1) from exc
+    table = Table(title=f"resolved model artifacts (cache: {manager.cache_dir})")
+    table.add_column("artifact")
+    table.add_column("revision")
+    table.add_column("path")
+    for artifact in resolved.values():
+        table.add_row(
+            artifact.name,
+            (artifact.resolved_revision or "-")[:16],
+            artifact.path,
+        )
+    console.print(table)
+    entry = manifest["voices"].get(voice_id)
+    if entry is not None:
+        console.print(f"voice license/source: {entry['license_url']}", markup=False)
 
 
 def _fmt(value: int | None) -> str:
