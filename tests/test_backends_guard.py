@@ -68,11 +68,11 @@ def test_adapter_construction_without_extra_raises_clear_error(
 
     with pytest.raises(MissingExtraError) as ei:
         # Minimal kwargs; the import guard fires in __init__ before real use.
-        if cls_name == "WhisperSTT" or cls_name == "NllbMT":
-            cls()
+        if cls_name in ("WhisperSTT", "NllbMT", "RealtimeS2S"):
+            cls()  # RealtimeS2S never accepts a key: the SDK reads the env
         elif cls_name == "PiperTTS":
             cls(model_path="x.onnx")
-        elif cls_name == "RealtimeS2S" or cls_name == "GeminiS2S":
+        elif cls_name == "GeminiS2S":
             cls(api_key="k")
         elif cls_name == "ElevenLabsTTS":
             cls(api_key="k", voice_id="v")
