@@ -83,6 +83,25 @@ interpret-live bench
 audio-stage retractions: 0 (0 = synthesized speech never stuttered)
 ```
 
+### Why `n` is tunable (the LocalAgreement tradeoff)
+
+The built-in `late-revision-en` fixture makes the stability/latency tradeoff a
+one-liner. Its ASR closes a segment on a wrong guess (`buck.`) and only *then*
+revises it to `book.` — a correction that lands **after** the token would commit
+at `n=1` but **before** it could commit at `n=2`:
+
+```bash
+interpret-live bench --fixture late-revision-en --agreement-n 1   # disagreements > 0 (spoke "buck.")
+interpret-live bench --fixture late-revision-en --agreement-n 2   # disagreements 0 (waited, spoke "book.")
+```
+
+At `n=1` the eager commit ships the misread to MT/TTS and the later `book.`
+contradicts an already-committed token, so the **disagreements** column is
+non-zero — the signal to raise `n`. At `n=2` the wrong guess never commits, the
+correct sentence is spoken, and the column is `0`. **Retractions stay `0` at
+both** because the committed prefix is monotonic: a late disagreement only bumps
+the tuning counter, it never un-commits already-spoken audio.
+
 The same demo as a script lives at [`examples/bench_demo.py`](examples/bench_demo.py):
 
 ```bash

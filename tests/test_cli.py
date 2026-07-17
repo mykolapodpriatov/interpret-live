@@ -45,6 +45,26 @@ def test_bench_accepts_tuning_flags() -> None:
     assert "retractions: 0" in result.output
 
 
+def test_bench_selects_named_fixture() -> None:
+    result = runner.invoke(app, ["bench", "--fixture", "late-revision-en"])
+    assert result.exit_code == 0, result.output
+    assert "late-revision-en" in result.output
+
+
+def test_bench_late_revision_fixture_disagrees_at_n1() -> None:
+    # At n=1 the eager commit ships the misread, so the disagreement column is live.
+    result = runner.invoke(app, ["bench", "--fixture", "late-revision-en", "--agreement-n", "1"])
+    assert result.exit_code == 0, result.output
+    assert "late-revision-en" in result.output
+
+
+def test_bench_unknown_fixture_exits_two_listing_available() -> None:
+    result = runner.invoke(app, ["bench", "--fixture", "does-not-exist"])
+    assert result.exit_code == 2
+    assert "unknown fixture" in result.output
+    assert "default-en-2sent" in result.output and "late-revision-en" in result.output
+
+
 def test_version_flag() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0

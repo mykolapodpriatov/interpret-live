@@ -10,6 +10,7 @@ stability (zero retraction) without any model, network, or real audio.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,7 +23,15 @@ from .metrics import MetricsReport
 from .pipeline import Pipeline
 from .types import AudioFrame, Hypothesis, Token
 
-__all__ = ["BenchFixture", "BenchResult", "default_fixture", "run_bench"]
+__all__ = [
+    "FIXTURES",
+    "BenchFixture",
+    "BenchResult",
+    "default_fixture",
+    "get_fixture",
+    "late_revision_fixture",
+    "run_bench",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +113,69 @@ def default_fixture() -> BenchFixture:
         translations=translations,
         frame_count=24,
     )
+
+
+def late_revision_fixture() -> BenchFixture:
+    """A one-sentence fixture that makes the LocalAgreement-*n* tradeoff visible.
+
+    The ASR closes a segment on a wrong guess — ``"buck."`` — and only *then*
+    revises it to ``"book."`` on the very next partial. The revision therefore
+    lands **after** the token would commit at ``n=1`` but **before** it could
+    commit at ``n=2`` (which needs the token unchanged across two consecutive
+    partials):
+
+    * At ``n=1`` the eager commit ships ``"I read a buck."`` to MT/TTS, and the
+      later ``"book."`` contradicts an already-committed token, so
+      ``post_commit_disagreement > 0`` — a signal to raise ``n``.
+    * At ``n=2`` the wrong guess never commits, the correct ``"I read a book."``
+      is what gets spoken, and ``post_commit_disagreement == 0``.
+
+    Retractions stay ``0`` at every ``n``: the committed prefix is monotonic by
+    construction (see :mod:`interpret_live.stabilize`), so a late disagreement
+    only bumps the tuning counter — it never un-commits already-spoken audio.
+    """
+    utt = [
+        _hyp(["I"]),
+        _hyp(["I", "read"]),
+        _hyp(["I", "read", "a"]),
+        _hyp(["I", "read", "a", "buck."]),
+        _hyp(["I", "read", "a", "book."]),
+        _hyp(["I", "read", "a", "book."], is_final=True),
+    ]
+    translations = {
+        "I read a book.": "leí un libro.",
+        "I read a buck.": "leí un dólar.",  # the eager n=1 misread, translated literally
+    }
+    return BenchFixture(
+        name="late-revision-en",
+        utterances=[utt],
+        translations=translations,
+        frame_count=12,
+    )
+
+
+#: Named, built-in benchmark fixtures. ``get_fixture`` builds a fresh instance
+#: per call (each factory returns immutable-by-intent but list-backed data, so a
+#: registry of factories keeps callers isolated from one another).
+FIXTURES: dict[str, Callable[[], BenchFixture]] = {
+    "default-en-2sent": default_fixture,
+    "late-revision-en": late_revision_fixture,
+}
+
+
+def get_fixture(name: str) -> BenchFixture:
+    """Return the built-in fixture registered under ``name``.
+
+    Raises:
+        ValueError: If ``name`` is not a known fixture; the message lists the
+            available names so a caller (e.g. the CLI) can surface them.
+    """
+    try:
+        factory = FIXTURES[name]
+    except KeyError:
+        available = ", ".join(sorted(FIXTURES))
+        raise ValueError(f"unknown fixture {name!r}; available: {available}") from None
+    return factory()
 
 
 def _source_frames(clock: ManualClock, count: int) -> FakeAudioSource:

@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .bench import default_fixture, run_bench
+from .bench import FIXTURES, get_fixture, run_bench
 from .config import PipelineConfig
 
 app = typer.Typer(
@@ -45,6 +45,11 @@ def _main(
 
 @app.command()
 def bench(
+    fixture_name: str = typer.Option(
+        "default-en-2sent",
+        "--fixture",
+        help=f"Built-in fixture to replay (one of: {', '.join(sorted(FIXTURES))}).",
+    ),
     agreement_n: int = typer.Option(2, "--agreement-n", min=1, help="LocalAgreement window."),
     max_segment_tokens: int = typer.Option(
         24, "--max-segment-tokens", min=1, help="Forced-flush segment cap."
@@ -52,7 +57,11 @@ def bench(
 ) -> None:
     """Replay a fixture through fake backends and print latency + stability."""
     cfg = PipelineConfig(agreement_n=agreement_n, max_segment_tokens=max_segment_tokens)
-    fixture = default_fixture()
+    try:
+        fixture = get_fixture(fixture_name)
+    except ValueError as exc:
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=2) from exc
     result = asyncio.run(run_bench(fixture, config=cfg))
     report = result.report
 
