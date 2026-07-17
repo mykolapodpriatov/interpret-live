@@ -7,8 +7,6 @@ hint — never an obscure raw ``ImportError`` from deep inside an adapter.
 
 from __future__ import annotations
 
-import builtins
-
 import pytest
 
 from interpret_live.backends.guard import MissingExtraError, require
@@ -51,23 +49,18 @@ def test_adapter_construction_without_extra_raises_clear_error(
     extra: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Force the optional module import to fail, simulating a missing extra.
-    # Cached modules are dropped too, so this also holds when the extra IS
-    # installed (the optional-extra contract CI job runs with everything).
+    # Force the optional module import to fail, simulating a missing extra —
+    # in a way that also holds when the extra IS installed (the optional-extra
+    # contract CI job runs with everything): drop any cached module and plant
+    # ``None`` in sys.modules, which makes both ``import x`` and
+    # ``importlib.import_module("x")`` raise ImportError deterministically.
     import importlib
     import sys
-
-    real_import = builtins.__import__
-
-    def _fake_import(name: str, *args: object, **kwargs: object) -> object:
-        if name == module or name.startswith(module + "."):
-            raise ImportError(f"No module named {name!r}")
-        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
 
     for cached in list(sys.modules):
         if cached == module or cached.startswith(module + "."):
             monkeypatch.delitem(sys.modules, cached)
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    monkeypatch.setitem(sys.modules, module, None)
 
     mod_path, cls_name = backend_cls_path.rsplit(".", 1)
     cls = getattr(importlib.import_module(mod_path), cls_name)
