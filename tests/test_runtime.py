@@ -327,13 +327,12 @@ def test_default_source_sink_and_device_validation_with_fake_sd(
 ) -> None:
     import sys
 
-    from test_audio_io_real import make_fake_sd
-
     from interpret_live.runtime import (
         _default_make_sink,
         _default_make_source,
         _default_validate_devices,
     )
+    from test_audio_io_real import make_fake_sd
 
     monkeypatch.setitem(sys.modules, "sounddevice", make_fake_sd())
     clock = ManualClock()
