@@ -27,11 +27,22 @@ __all__ = [
     "Hypothesis",
     "MetricEvent",
     "MetricKind",
+    "PlaybackCursor",
     "PlaybackGeneration",
     "PlaybackHandle",
     "PlaybackProgress",
     "PlaybackReceipt",
     "PlaybackRejectedError",
+    "S2SAudioChunk",
+    "S2SContentDone",
+    "S2SEvent",
+    "S2SInterruptTarget",
+    "S2SProtocolError",
+    "S2SResponseDone",
+    "S2SResponseError",
+    "S2SResponseStarted",
+    "S2SSpeechCommitted",
+    "S2SSpeechStarted",
     "Segment",
     "Token",
     "TtsChunk",
@@ -385,3 +396,146 @@ class AudioSink(Protocol):
     async def aclose(self) -> None:
         """Release the sink's device/tasks (idempotent)."""
         ...
+
+
+# ----- Persistent S2S provider protocol types (plan Task 6) -------------------
+
+
+class S2SProtocolError(RuntimeError):
+    """A provider event referenced an unknown response/input item."""
+
+
+class S2SResponseError(RuntimeError):
+    """A response ended with a failed/unexpected status.
+
+    Attributes:
+        response_id: The provider response that failed.
+        status: The terminal status (``failed``, ``incomplete``, or an
+            unexpected ``cancelled``).
+        reason: Optional provider-supplied detail.
+    """
+
+    def __init__(self, response_id: str, status: str, reason: str | None = None) -> None:
+        self.response_id = response_id
+        self.status = status
+        self.reason = reason
+        detail = f" ({reason})" if reason else ""
+        super().__init__(f"provider response {response_id!r} ended {status}{detail}")
+
+
+@dataclass(frozen=True, slots=True)
+class S2SSpeechStarted:
+    """Provider detected input speech start (a required control event).
+
+    ``source_started_at_ms`` is already translated into the injected
+    application :class:`~interpret_live.clock.Clock` domain by the adapter.
+    """
+
+    input_item_id: str
+    source_started_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class S2SSpeechCommitted:
+    """Provider committed the input turn's audio buffer."""
+
+    input_item_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class S2SResponseStarted:
+    """Provider began generating a response for a committed input turn."""
+
+    response_id: str
+    input_item_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class S2SAudioChunk:
+    """One block of provider response audio with full provenance.
+
+    Attributes:
+        samples: Canonical mono float32 samples.
+        sample_rate: Rate of ``samples`` in Hz.
+        response_id: Owning provider response.
+        item_id: Provider output item id.
+        output_index: Output index within the response.
+        content_index: Content index within the output item.
+        final: ``True`` when this is the content stream's last audio block
+            (content-final status — NOT response completion).
+    """
+
+    samples: NDArray[np.float32]
+    sample_rate: int
+    response_id: str
+    item_id: str
+    output_index: int
+    content_index: int
+    final: bool = False
+
+    def __post_init__(self) -> None:
+        _validate_mono_samples(self.samples, owner="S2SAudioChunk")
+        if self.sample_rate <= 0:
+            raise ValueError(f"S2SAudioChunk.sample_rate must be > 0, got {self.sample_rate}")
+
+
+@dataclass(frozen=True, slots=True)
+class S2SContentDone:
+    """The response's audio content stream finished (response may continue)."""
+
+    response_id: str
+    item_id: str
+    content_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class S2SResponseDone:
+    """The response reached a terminal status.
+
+    Only ``status="completed"`` is a natural completion. An expected
+    ``cancelled`` for an abandoned response is an interrupt acknowledgement;
+    ``failed`` / unexpected ``cancelled`` / ``incomplete`` surface as typed
+    errors and never emit a natural final or roll a fresh turn.
+    """
+
+    response_id: str
+    status: str
+    reason: str | None = None
+
+
+#: Everything a persistent S2S provider stream may yield.
+S2SEvent = (
+    S2SSpeechStarted
+    | S2SSpeechCommitted
+    | S2SResponseStarted
+    | S2SAudioChunk
+    | S2SContentDone
+    | S2SResponseDone
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PlaybackCursor:
+    """How much of one response's audio was actually heard.
+
+    ``audio_end_ms`` counts only source-rate audio whose presentation time has
+    passed — never queued or device-buffered samples — always scoped to one
+    response's item/content stream.
+    """
+
+    response_id: str
+    item_id: str
+    content_index: int
+    audio_end_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class S2SInterruptTarget:
+    """The exact response a barge-in must cancel (and truncate, if heard).
+
+    ``cursor`` is ``None`` when the response was cancelled before any of its
+    audio became audible.
+    """
+
+    response_id: str
+    cursor: PlaybackCursor | None = None

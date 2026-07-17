@@ -10,15 +10,23 @@ path. :meth:`interrupt` issues the provider's cancellation on barge-in.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
-from ..types import AudioFrame, TtsChunk
+from ..types import AudioFrame, S2SEvent, S2SInterruptTarget
 from .guard import require
+
+if TYPE_CHECKING:
+    from . import S2S
 
 __all__ = ["GeminiS2S"]
 
 
 class GeminiS2S:
-    """Speech-to-speech via the Gemini Live API.
+    """Speech-to-speech via the Gemini Live API (out-of-scope scaffold).
+
+    Tracks the shared persistent :class:`~interpret_live.backends.S2S`
+    protocol (typed event stream + targeted interrupt) so it cannot silently
+    drift behind it; the implementation itself remains not-implemented.
 
     Args:
         api_key: Google AI API key.
@@ -39,15 +47,22 @@ class GeminiS2S:
         self._target_lang = target_lang
 
     def stream(
-        self, audio: AsyncIterator[AudioFrame], *, utterance_id: str
-    ) -> AsyncIterator[TtsChunk]:  # pragma: no cover - requires network/SDK
-        """Stream translated target audio for the incoming ``audio``."""
+        self, audio: AsyncIterator[AudioFrame]
+    ) -> AsyncIterator[S2SEvent]:  # pragma: no cover - requires network/SDK
+        """Stream typed provider events for the continuous source ``audio``."""
         raise NotImplementedError(
             "GeminiS2S streaming requires a live Gemini Live session; wire the "
             "bidirectional session here. The interface and import-guard are in "
             "place so the pipeline/Session can target it."
         )
 
-    async def interrupt(self) -> None:  # pragma: no cover - requires network/SDK
-        """Cancel the in-flight Gemini Live turn."""
+    async def interrupt(
+        self, target: S2SInterruptTarget
+    ) -> None:  # pragma: no cover - requires network/SDK
+        """Cancel exactly ``target.response_id`` on the live session."""
         raise NotImplementedError("interrupt requires a live Gemini Live session")
+
+
+def _static_protocol_conformance(adapter: GeminiS2S) -> S2S:  # pragma: no cover
+    """mypy-enforced: GeminiS2S must keep satisfying the shared S2S protocol."""
+    return adapter
