@@ -42,8 +42,9 @@ The novel audio-stage stabilization is delivered on the **pipeline (including th
 
 - [x] LocalAgreement audio-stage stabilizer + segmentation + VAD/barge-in (pure, deterministic)
 - [x] Interruptible asyncio pipeline + metrics + `Session`/dual-channel + CLI `bench` (offline)
-- [ ] Offline adapters wired live: faster-whisper → local MT → Piper (`[whisper]`, `[mt]`, `[piper]`, `[audio]`)
-- [ ] Cloud S2S live: OpenAI Realtime / Gemini Live (`[openai]`, `[gemini]`); ElevenLabs voice preservation (`[elevenlabs]`)
+- [x] Offline adapters wired live: faster-whisper → NLLB → Piper (`[whisper]`, `[mt]`, `[piper]`, `[audio]`) — spawned model workers, endpointing, model prefetch/cache/offline mode ([guide](docs/live-adapters.md))
+- [x] Cloud S2S live: OpenAI Realtime (`[openai]` + `[audio]`) — persistent session, response-scoped barge-in cancel/truncate
+- [ ] Gemini Live (`[gemini]`); ElevenLabs voice preservation (`[elevenlabs]`)
 
 ## Install
 
@@ -57,8 +58,8 @@ Optional backends are extras (install only what you need):
 
 ```bash
 pip install 'interpret-live[whisper,mt,piper,audio]'   # fully-offline live pipeline
-pip install 'interpret-live[openai]'                   # cloud realtime S2S (or [gemini])
-pip install 'interpret-live[elevenlabs]'               # voice-preserving TTS
+pip install 'interpret-live[openai,audio]'             # OpenAI Realtime (mic/speaker need [audio])
+pip install 'interpret-live[elevenlabs]'               # voice-preserving TTS (planned)
 ```
 
 Requires Python **3.11+** (validated on 3.11, 3.12, 3.13).
@@ -91,10 +92,14 @@ python examples/bench_demo.py
 Other commands:
 
 ```bash
-interpret-live run --from en --to es --backend offline   # live session (needs extras)
-interpret-live run --from en --to es --backend cloud --dual
+interpret-live models download --backend offline --from en --to es   # visible, cached prefetch
+interpret-live run --from en --to es --backend offline               # live offline session
+interpret-live run --from en --to es --backend cloud --openai-voice marin
 interpret-live devices                                   # list audio devices (needs [audio])
 ```
+
+Live setup, model cache/offline mode, device selection, dual mode, and
+troubleshooting are documented in [docs/live-adapters.md](docs/live-adapters.md).
 
 ## Library
 
@@ -134,8 +139,13 @@ The entire core is tested **offline and deterministically**: scripted fake STT/M
 pip install -e '.[dev]'
 ruff check && ruff format --check
 mypy src
-pytest -q --cov=interpret_live --cov-report=term-missing
+pytest -q --cov=interpret_live --cov-report=term-missing --cov-fail-under=90
 ```
+
+PR CI covers the live adapters through mocked hardware/model/transport
+boundaries (plus a dedicated all-extras contract job); the opt-in
+`pytest -m live_smoke` suite and the manual audible procedure in
+[docs/live-adapters.md](docs/live-adapters.md) exercise real models.
 
 ## License
 

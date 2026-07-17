@@ -74,7 +74,7 @@ def _child_main(
     req_q: Any,
     res_q: Any,
     cancel_event: Any,
-) -> None:  # pragma: no cover - runs in the spawned child (covered by spawn tests)
+) -> None:
     # The parent owns cancellation/teardown; the child must not race it by
     # dying on the terminal's SIGINT before cooperative shutdown is attempted.
     signal.signal(signal.SIGINT, signal.SIG_IGN)

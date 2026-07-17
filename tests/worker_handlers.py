@@ -57,3 +57,14 @@ def error_factory() -> Any:
         raise ValueError(f"bad payload: {payload!r}")
 
     return handle
+
+
+def echo_or_error_factory() -> Any:
+    """Echo handler that raises for the payload ``"boom"`` (in-process tests)."""
+
+    def handle(payload: Any, cancel_event: Any) -> Any:
+        if payload == "boom":
+            raise RuntimeError("boom payload")
+        return f"pong:{payload}"
+
+    return handle

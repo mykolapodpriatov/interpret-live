@@ -146,20 +146,22 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-q"
+# live_smoke is opt-in for maintainers (real models/hardware/API key):
+# run with `pytest -m live_smoke` — never in ordinary CI.
+addopts = "-q -m 'not live_smoke'"
+markers = [
+    "live_smoke: opt-in manual smoke against real models/hardware/network",
+]
 filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true
 source = ["interpret_live"]
+# Only the explicitly out-of-scope provider scaffolds stay excluded; every
+# in-scope live adapter and the real audio edges are measured.
 omit = [
-    "src/interpret_live/backends/whisper.py",
-    "src/interpret_live/backends/nllb.py",
-    "src/interpret_live/backends/piper.py",
-    "src/interpret_live/backends/realtime.py",
     "src/interpret_live/backends/gemini.py",
     "src/interpret_live/backends/elevenlabs.py",
-    "src/interpret_live/audio_io.py",
 ]
 
 [tool.coverage.report]
