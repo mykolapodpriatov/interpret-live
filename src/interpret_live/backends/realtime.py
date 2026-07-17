@@ -193,7 +193,11 @@ class _CommandPump:
 
     async def _timed_send(self, payload: dict[str, Any]) -> None:
         try:
-            await asyncio.wait_for(self._send(payload), self._send_timeout_s)
+            # asyncio.timeout (not wait_for): on 3.11 wait_for can swallow an
+            # external cancellation that races the send's completion, burning
+            # the task's single cancel request and leaving it uncancellable.
+            async with asyncio.timeout(self._send_timeout_s):
+                await self._send(payload)
         except TimeoutError as exc:
             raise RealtimeError(
                 f"outbound send of {payload.get('type')!r} exceeded "
@@ -535,9 +539,8 @@ class RealtimeS2S:
                         await pump.enqueue({"type": "response.create"})
         # Await the final response (or the bounded timeout) before closing.
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                self._eof.response_done.wait(), self._final_response_timeout_ms / 1000
-            )
+            async with asyncio.timeout(self._final_response_timeout_ms / 1000):
+                await self._eof.response_done.wait()
 
     # ----- receive path ------------------------------------------------------------
 
