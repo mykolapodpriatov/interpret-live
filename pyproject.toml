@@ -57,7 +57,10 @@ whisper = ["faster-whisper>=1.0", "soxr>=0.5", "huggingface-hub>=0.23"]
 mt = ["transformers>=4.40", "torch>=2.2", "sentencepiece>=0.2", "huggingface-hub>=0.23"]
 piper = ["piper-tts>=1.2"]
 audio = ["sounddevice>=0.4", "soxr>=0.5"]
-openai = ["openai>=1.40", "soxr>=0.5"]
+# The SDK's `realtime` extra installs the WebSocket transport used by
+# `client.realtime.connect()`; 1.104 is the first GA `gpt-realtime` surface
+# the adapter exercises (proven by the optional-extra contract CI job).
+openai = ["openai[realtime]>=1.104.0", "soxr>=0.5"]
 gemini = ["google-genai>=0.3"]
 elevenlabs = ["elevenlabs>=1.0"]
 dev = [
