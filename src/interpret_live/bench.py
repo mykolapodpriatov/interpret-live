@@ -45,12 +45,14 @@ class BenchFixture:
             (the last carrying ``is_final=True``), including ASR revisions.
         translations: Exact segment-text → target-text mapping for the fake MT.
         frame_count: Number of source audio frames to drive STT.
+        description: One-line summary shown by ``bench --list-fixtures``.
     """
 
     name: str
     utterances: list[list[Hypothesis]]
     translations: dict[str, str]
     frame_count: int
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,7 @@ def default_fixture() -> BenchFixture:
         utterances=[utt1, utt2],
         translations=translations,
         frame_count=24,
+        description="Two English sentences with a mid-word ASR revision (zero-retraction demo).",
     )
 
 
@@ -152,6 +155,7 @@ def late_revision_fixture() -> BenchFixture:
         utterances=[utt],
         translations=translations,
         frame_count=12,
+        description="One sentence whose late revision exposes the LocalAgreement-n tradeoff.",
     )
 
 
@@ -184,6 +188,7 @@ def cjk_ja_fixture() -> BenchFixture:
         utterances=[utt1, utt2],
         translations=translations,
         frame_count=12,
+        description="Two Japanese sentences that close on CJK terminators (。 ／ ？).",
     )
 
 

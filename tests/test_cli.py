@@ -66,6 +66,22 @@ def test_bench_unknown_fixture_exits_two_listing_available() -> None:
     assert "default-en-2sent" in result.output and "late-revision-en" in result.output
 
 
+def test_bench_list_fixtures_enumerates_with_descriptions_and_exits_zero() -> None:
+    result = runner.invoke(app, ["bench", "--list-fixtures"])
+    assert result.exit_code == 0, result.output
+    # Collapse Rich soft-wrapping so fragments match regardless of console width.
+    text = " ".join(result.output.split())
+    # Every built-in fixture is listed with its one-line description.
+    for name in ("default-en-2sent", "late-revision-en", "cjk-ja-2sent"):
+        assert name in text
+    assert "mid-word ASR revision" in text
+    assert "LocalAgreement-n" in text
+    assert "CJK terminators" in text
+    # Listing exits without running a benchmark: no metrics table, no retraction line.
+    assert "first-audio-out" not in text
+    assert "audio-stage retractions" not in text
+
+
 def test_bench_json_parses_and_carries_the_documented_schema() -> None:
     result = runner.invoke(
         app, ["bench", "--json", "--fixture", "late-revision-en", "--agreement-n", "1"]

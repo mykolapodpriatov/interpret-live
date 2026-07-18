@@ -58,8 +58,19 @@ def bench(
     as_json: bool = typer.Option(
         False, "--json", help="Emit metrics as JSON to stdout (no table) for CI diffing/gating."
     ),
+    list_fixtures: bool = typer.Option(
+        False,
+        "--list-fixtures",
+        help="List built-in fixtures with a one-line description and exit.",
+    ),
 ) -> None:
     """Replay a fixture through fake backends and print latency + stability."""
+    if list_fixtures:
+        # Enumerate the registry (each factory builds a fresh instance to read its
+        # description) and exit 0 without running anything.
+        for name in sorted(FIXTURES):
+            console.print(f"{name}  {FIXTURES[name]().description}", highlight=False)
+        raise typer.Exit(code=0)
     cfg = PipelineConfig(agreement_n=agreement_n, max_segment_tokens=max_segment_tokens)
     try:
         fixture = get_fixture(fixture_name)
