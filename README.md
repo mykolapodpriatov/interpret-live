@@ -83,6 +83,64 @@ interpret-live bench
 audio-stage retractions: 0 (0 = synthesized speech never stuttered)
 ```
 
+### Why `n` is tunable (the LocalAgreement tradeoff)
+
+The built-in `late-revision-en` fixture makes the stability/latency tradeoff a
+one-liner. Its ASR closes a segment on a wrong guess (`buck.`) and only *then*
+revises it to `book.` — a correction that lands **after** the token would commit
+at `n=1` but **before** it could commit at `n=2`:
+
+```bash
+interpret-live bench --fixture late-revision-en --agreement-n 1   # disagreements > 0 (spoke "buck.")
+interpret-live bench --fixture late-revision-en --agreement-n 2   # disagreements 0 (waited, spoke "book.")
+```
+
+At `n=1` the eager commit ships the misread to MT/TTS and the later `book.`
+contradicts an already-committed token, so the **disagreements** column is
+non-zero — the signal to raise `n`. At `n=2` the wrong guess never commits, the
+correct sentence is spoken, and the column is `0`. **Retractions stay `0` at
+both** because the committed prefix is monotonic: a late disagreement only bumps
+the tuning counter, it never un-commits already-spoken audio.
+
+### Machine-readable metrics (`--json`)
+
+Add `--json` to emit the metrics as a deterministic, markup-free JSON document
+(the Rich table is suppressed) so first-audio-out, commit-lag, and retractions
+can be diffed across commits or gated in CI. The exit code still contracts to `1`
+if any audio-stage retraction is observed.
+
+```bash
+interpret-live bench --json --fixture late-revision-en --agreement-n 1
+```
+
+```json
+{
+  "fixture": "late-revision-en",
+  "config": {
+    "agreement_n": 1,
+    "max_segment_tokens": 24
+  },
+  "played_segments": [0, 0],
+  "utterances": [
+    {
+      "utterance_id": "utt-1",
+      "first_audio_out_ms": 230,
+      "commit_lag_ms": 0,
+      "barge_in_stop_ms": null,
+      "retraction_count": 0,
+      "post_commit_disagreement": 2
+    }
+  ],
+  "total_retractions": 0,
+  "total_post_commit_disagreement": 2,
+  "max_first_audio_out_ms": 230,
+  "max_barge_in_stop_ms": null
+}
+```
+
+The harness is fully deterministic (a `ManualClock` with drain-then-advance), so
+the same flags produce a byte-identical payload every run.
+
 The same demo as a script lives at [`examples/bench_demo.py`](examples/bench_demo.py):
 
 ```bash

@@ -66,6 +66,47 @@ def test_post_commit_disagreement_counted_per_utterance() -> None:
     assert log.report().total_post_commit_disagreement == 2
 
 
+def test_utterance_metrics_to_dict_is_explicit_and_json_ready() -> None:
+    import json
+
+    log = MetricsLog()
+    log.append(_ev("utterance_start", 0, "u1"))
+    log.append(_ev("first_tts_out", 200, "u1"))
+    log.append(_ev("commit", 120, "u1"))
+    d = log.for_utterance("u1").to_dict()
+    assert d == {
+        "utterance_id": "u1",
+        "first_audio_out_ms": 200,
+        "commit_lag_ms": 120,
+        "barge_in_stop_ms": None,
+        "retraction_count": 0,
+        "post_commit_disagreement": 0,
+    }
+    # None survives a JSON round-trip as null, not a dropped key.
+    assert json.loads(json.dumps(d))["barge_in_stop_ms"] is None
+
+
+def test_report_to_dict_serializes_utterances_and_aggregates() -> None:
+    import json
+
+    log = MetricsLog()
+    log.append(_ev("utterance_start", 0, "u1"))
+    log.append(_ev("first_tts_out", 200, "u1"))
+    log.append(_ev("post_commit_disagreement", 40, "u1"))
+    log.record_retraction(2, utterance_id="u1")
+    d = log.report().to_dict()
+    assert d["total_retractions"] == 2
+    assert d["total_post_commit_disagreement"] == 1
+    assert d["max_first_audio_out_ms"] == 200
+    assert d["max_barge_in_stop_ms"] is None
+    utterances = d["utterances"]
+    assert isinstance(utterances, list)
+    assert utterances[0]["utterance_id"] == "u1"
+    assert utterances[0]["retraction_count"] == 2
+    # The whole report is JSON-serializable.
+    assert json.loads(json.dumps(d))["total_retractions"] == 2
+
+
 def test_missing_events_yield_none() -> None:
     log = MetricsLog()
     log.append(_ev("utterance_start", 0, "u1"))

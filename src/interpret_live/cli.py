@@ -10,13 +10,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .bench import default_fixture, run_bench
+from .bench import FIXTURES, get_fixture, run_bench
 from .config import PipelineConfig
 
 app = typer.Typer(
@@ -45,36 +46,63 @@ def _main(
 
 @app.command()
 def bench(
+    fixture_name: str = typer.Option(
+        "default-en-2sent",
+        "--fixture",
+        help=f"Built-in fixture to replay (one of: {', '.join(sorted(FIXTURES))}).",
+    ),
     agreement_n: int = typer.Option(2, "--agreement-n", min=1, help="LocalAgreement window."),
     max_segment_tokens: int = typer.Option(
         24, "--max-segment-tokens", min=1, help="Forced-flush segment cap."
     ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit metrics as JSON to stdout (no table) for CI diffing/gating."
+    ),
 ) -> None:
     """Replay a fixture through fake backends and print latency + stability."""
     cfg = PipelineConfig(agreement_n=agreement_n, max_segment_tokens=max_segment_tokens)
-    fixture = default_fixture()
+    try:
+        fixture = get_fixture(fixture_name)
+    except ValueError as exc:
+        console.print(str(exc), markup=False, style="red")
+        raise typer.Exit(code=2) from exc
     result = asyncio.run(run_bench(fixture, config=cfg))
     report = result.report
 
-    table = Table(title=f"interpret-live bench — fixture '{fixture.name}'")
-    table.add_column("utterance", style="cyan")
-    table.add_column("first-audio-out (ms)", justify="right")
-    table.add_column("commit-lag (ms)", justify="right")
-    table.add_column("disagreements", justify="right")
-    for u in report.utterances:
-        table.add_row(
-            u.utterance_id,
-            _fmt(u.first_audio_out_ms),
-            _fmt(u.commit_lag_ms),
-            str(u.post_commit_disagreement),
+    if as_json:
+        # Deterministic (ManualClock + drain-then-advance), markup-free payload so
+        # first-audio-out / commit-lag / retractions can be diffed across commits
+        # or gated in CI. json.dumps + a stable key order keep it byte-identical
+        # across identical runs; typer.echo bypasses Rich markup/soft-wrapping.
+        payload: dict[str, object] = {
+            "fixture": fixture.name,
+            "config": {"agreement_n": agreement_n, "max_segment_tokens": max_segment_tokens},
+            "played_segments": list(result.played_segments),
+            **report.to_dict(),
+        }
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        table = Table(title=f"interpret-live bench — fixture '{fixture.name}'")
+        table.add_column("utterance", style="cyan")
+        table.add_column("first-audio-out (ms)", justify="right")
+        table.add_column("commit-lag (ms)", justify="right")
+        table.add_column("disagreements", justify="right")
+        for u in report.utterances:
+            table.add_row(
+                u.utterance_id,
+                _fmt(u.first_audio_out_ms),
+                _fmt(u.commit_lag_ms),
+                str(u.post_commit_disagreement),
+            )
+        console.print(table)
+        console.print(
+            f"audio-stage retractions: [bold green]{result.retraction_count}[/] "
+            "(0 = synthesized speech never stuttered)"
         )
-    console.print(table)
-    console.print(
-        f"audio-stage retractions: [bold green]{result.retraction_count}[/] "
-        "(0 = synthesized speech never stuttered)"
-    )
-    console.print(f"played segments (in order): {list(result.played_segments)}")
-    console.print(f"synthesized samples: {result.played_samples.size}")
+        console.print(f"played segments (in order): {list(result.played_segments)}")
+        console.print(f"synthesized samples: {result.played_samples.size}")
+    # Exit-code contract holds in both modes: a retraction (audio-stage
+    # instability) is a hard failure that CI can gate on.
     if result.retraction_count != 0:
         raise typer.Exit(code=1)
 
