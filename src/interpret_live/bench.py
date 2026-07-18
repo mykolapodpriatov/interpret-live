@@ -27,6 +27,7 @@ __all__ = [
     "FIXTURES",
     "BenchFixture",
     "BenchResult",
+    "cjk_ja_fixture",
     "default_fixture",
     "get_fixture",
     "late_revision_fixture",
@@ -44,12 +45,14 @@ class BenchFixture:
             (the last carrying ``is_final=True``), including ASR revisions.
         translations: Exact segment-text → target-text mapping for the fake MT.
         frame_count: Number of source audio frames to drive STT.
+        description: One-line summary shown by ``bench --list-fixtures``.
     """
 
     name: str
     utterances: list[list[Hypothesis]]
     translations: dict[str, str]
     frame_count: int
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +115,7 @@ def default_fixture() -> BenchFixture:
         utterances=[utt1, utt2],
         translations=translations,
         frame_count=24,
+        description="Two English sentences with a mid-word ASR revision (zero-retraction demo).",
     )
 
 
@@ -151,6 +155,40 @@ def late_revision_fixture() -> BenchFixture:
         utterances=[utt],
         translations=translations,
         frame_count=12,
+        description="One sentence whose late revision exposes the LocalAgreement-n tradeoff.",
+    )
+
+
+def cjk_ja_fixture() -> BenchFixture:
+    """A two-sentence Japanese fixture that closes on CJK sentence terminators.
+
+    Japanese writes no inter-word spaces and ends sentences with the ideographic
+    full stop ``。`` and the full-width question mark ``？`` rather than ASCII
+    ``.`` / ``?``. With the CJK terminator set each sentence closes on its own
+    mark — instead of being force-flushed only at the ``max_segment_tokens`` cap
+    — so MT/TTS fire per sentence exactly as they do for English, and the
+    synthesized audio still shows zero retraction.
+    """
+    utt1 = [
+        _hyp(["これは"]),
+        _hyp(["これは", "テストです。"]),
+        _hyp(["これは", "テストです。"], is_final=True),
+    ]
+    utt2 = [
+        _hyp(["お元気"]),
+        _hyp(["お元気", "ですか？"]),
+        _hyp(["お元気", "ですか？"], is_final=True),
+    ]
+    translations = {
+        "これは テストです。": "this is a test.",
+        "お元気 ですか？": "how are you?",
+    }
+    return BenchFixture(
+        name="cjk-ja-2sent",
+        utterances=[utt1, utt2],
+        translations=translations,
+        frame_count=12,
+        description="Two Japanese sentences that close on CJK terminators (。 ／ ？).",
     )
 
 
@@ -160,6 +198,7 @@ def late_revision_fixture() -> BenchFixture:
 FIXTURES: dict[str, Callable[[], BenchFixture]] = {
     "default-en-2sent": default_fixture,
     "late-revision-en": late_revision_fixture,
+    "cjk-ja-2sent": cjk_ja_fixture,
 }
 
 

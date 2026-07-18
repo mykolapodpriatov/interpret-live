@@ -40,6 +40,25 @@ def test_commit_lag_derivation() -> None:
     assert m.commit_lag_ms == 120
 
 
+def test_commit_to_audio_derivation_isolates_backend_cost() -> None:
+    log = MetricsLog()
+    log.append(_ev("utterance_start", 100, "u1"))
+    log.append(_ev("commit", 220, "u1"))  # first commit anchors the MT+TTS window
+    log.append(_ev("first_tts_out", 450, "u1"))
+    log.append(_ev("commit", 300, "u1"))  # a later commit must not move the anchor
+    m = log.for_utterance("u1")
+    assert m.commit_to_audio_ms == 230  # 450 - 220 (backend cost, not stabilizer lag)
+    # It is exactly the span between commit lag and first-audio-out.
+    assert m.first_audio_out_ms == m.commit_lag_ms + m.commit_to_audio_ms  # type: ignore[operator]
+
+
+def test_commit_to_audio_is_none_without_both_events() -> None:
+    log = MetricsLog()
+    log.append(_ev("utterance_start", 0, "u1"))
+    log.append(_ev("commit", 50, "u1"))  # committed, but no audio yet
+    assert log.for_utterance("u1").commit_to_audio_ms is None
+
+
 def test_barge_in_stop_time_derivation() -> None:
     log = MetricsLog()
     log.append(_ev("interrupt", 1000, "u1"))
@@ -78,6 +97,7 @@ def test_utterance_metrics_to_dict_is_explicit_and_json_ready() -> None:
         "utterance_id": "u1",
         "first_audio_out_ms": 200,
         "commit_lag_ms": 120,
+        "commit_to_audio_ms": 80,  # first_tts_out (200) - first_commit (120)
         "barge_in_stop_ms": None,
         "retraction_count": 0,
         "post_commit_disagreement": 0,
@@ -113,6 +133,7 @@ def test_missing_events_yield_none() -> None:
     m = log.for_utterance("u1")
     assert m.first_audio_out_ms is None
     assert m.commit_lag_ms is None
+    assert m.commit_to_audio_ms is None
     assert m.barge_in_stop_ms is None
 
 
@@ -157,6 +178,31 @@ def test_events_property_returns_all_in_order() -> None:
     log.append(_ev("commit", 50, "u1"))
     kinds = [e.kind for e in log.events]
     assert kinds == ["utterance_start", "commit"]
+
+
+# ----- commit-to-audio on the built-in bench fixtures -------------------------
+
+
+def test_commit_to_audio_ms_on_builtin_fixtures() -> None:
+    """The metric surfaces deterministically through ``run_bench`` on both fixtures.
+
+    Values are exact (ManualClock + drain-then-advance) and, by construction,
+    equal ``first_audio_out_ms - commit_lag_ms`` for every utterance.
+    """
+    from interpret_live.bench import get_fixture, run_bench
+
+    default = asyncio.run(run_bench(get_fixture("default-en-2sent"))).report
+    assert {u.utterance_id: u.commit_to_audio_ms for u in default.utterances} == {
+        "utt-1": 290,
+        "utt-2": 370,
+    }
+
+    late = asyncio.run(run_bench(get_fixture("late-revision-en"))).report
+    assert [u.commit_to_audio_ms for u in late.utterances] == [290]
+
+    for report in (default, late):
+        for u in report.utterances:
+            assert u.commit_to_audio_ms == u.first_audio_out_ms - u.commit_lag_ms  # type: ignore[operator]
 
 
 # ----- Cross-check against a real run -----------------------------------------

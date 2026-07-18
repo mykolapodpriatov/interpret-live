@@ -2,7 +2,10 @@
 
 The committed token stream is split into :class:`~interpret_live.types.Segment`
 objects at **sentence boundaries** — the pinned terminal-punctuation set ``.``
-``!`` ``?`` (ASCII) for M1–M2 — or a ``max_segment_tokens`` cap to bound latency.
+``!`` ``?`` plus their CJK counterparts ``。`` ``！`` ``？`` — or a
+``max_segment_tokens`` cap to bound latency. Without the CJK marks a Japanese or
+Chinese source never closes on its own sentence terminators and the whole
+utterance is force-flushed at the token cap instead.
 
 * **MT translates only CLOSED segments** (a completed sentence or a max-token
   flush) — never a partial clause — because translating a partial clause yields
@@ -23,18 +26,25 @@ from .types import Segment, Token
 
 __all__ = ["TERMINAL_PUNCT", "Segmenter", "ends_segment"]
 
-#: Pinned terminal-punctuation set for M1–M2 (ASCII sentence terminators).
-#: CJK ``。！？`` and clause marks (``;`` / ``:``) are a documented future.
-TERMINAL_PUNCT: frozenset[str] = frozenset({".", "!", "?"})
+#: Pinned terminal-punctuation set: ASCII sentence terminators plus their CJK
+#: full-width/ideographic counterparts, so a Japanese/Chinese source closes on
+#: its own sentence marks. Clause marks (``;`` / ``:`` / ``；`` / ``：``) remain a
+#: documented future.
+TERMINAL_PUNCT: frozenset[str] = frozenset({".", "!", "?", "。", "！", "？"})
+
+#: Trailing marks stripped before the terminal-punctuation check: ASCII and CJK
+#: closing quotes/brackets, so ``done."`` and ``終わり。」`` still close a segment.
+_TRAILING_CLOSE: str = "\"')]}»”’」』）】》〉"
 
 
 def ends_segment(token: Token) -> bool:
     """Return ``True`` if ``token`` ends with a terminal punctuation mark.
 
-    A token like ``"end."`` or ``"really?"`` closes a segment; trailing quotes
-    or brackets after the terminator (e.g. ``'done."'``) still count.
+    A token like ``"end."``, ``"really?"`` or the CJK ``"終わり。"`` closes a
+    segment; trailing quotes or brackets after the terminator (e.g. ``'done."'``
+    or ``'終わり。」'``) still count.
     """
-    text = token.text.rstrip("\"')]}»”’")
+    text = token.text.rstrip(_TRAILING_CLOSE)
     return bool(text) and text[-1] in TERMINAL_PUNCT
 
 
