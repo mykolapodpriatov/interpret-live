@@ -8,6 +8,8 @@ utterance and overall:
   long after the user starts speaking the listener first hears target audio
   (simultaneity).
 * **commit lag** — time from utterance start to the *first* stabilizer commit.
+* **commit-to-audio** — ``t(first_tts_out) − t(first_commit)``: the MT+TTS cost
+  *after* the stabilizer commits, isolating backend latency from stabilizer lag.
 * **retraction count** — number of audio retractions; ``0`` on the stable path
   by construction (the committed prefix never retracts).
 * **barge-in stop time** — ``t(sink_stopped) − t(interrupt)``: how promptly
@@ -33,6 +35,7 @@ class UtteranceMetrics:
     utterance_id: str
     first_audio_out_ms: int | None
     commit_lag_ms: int | None
+    commit_to_audio_ms: int | None
     barge_in_stop_ms: int | None
     retraction_count: int
     post_commit_disagreement: int
@@ -48,6 +51,7 @@ class UtteranceMetrics:
             "utterance_id": self.utterance_id,
             "first_audio_out_ms": self.first_audio_out_ms,
             "commit_lag_ms": self.commit_lag_ms,
+            "commit_to_audio_ms": self.commit_to_audio_ms,
             "barge_in_stop_ms": self.barge_in_stop_ms,
             "retraction_count": self.retraction_count,
             "post_commit_disagreement": self.post_commit_disagreement,
@@ -154,6 +158,11 @@ class MetricsLog:
 
         first_audio = first_tts.t_ms - start.t_ms if (start and first_tts) else None
         commit_lag = first_commit.t_ms - start.t_ms if (start and first_commit) else None
+        # MT+TTS cost *after* the stabilizer commits: the gap you tune when
+        # latency is backend-bound rather than stabilizer-bound.
+        commit_to_audio = (
+            first_tts.t_ms - first_commit.t_ms if (first_commit and first_tts) else None
+        )
         barge_in = stopped.t_ms - interrupt.t_ms if (interrupt and stopped) else None
         disagreements = sum(
             1
@@ -164,6 +173,7 @@ class MetricsLog:
             utterance_id=uid,
             first_audio_out_ms=first_audio,
             commit_lag_ms=commit_lag,
+            commit_to_audio_ms=commit_to_audio,
             barge_in_stop_ms=barge_in,
             retraction_count=self._retractions_by_utt.get(uid, 0),
             post_commit_disagreement=disagreements,
