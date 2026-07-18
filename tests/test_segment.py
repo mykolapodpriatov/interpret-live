@@ -44,9 +44,28 @@ def test_does_not_close_without_terminal_punctuation() -> None:
     assert [t.text for t in seg.pending] == ["still", "going"]
 
 
+@pytest.mark.parametrize("terminator", ["。", "！", "？"])
+def test_closes_on_each_cjk_terminal_mark(terminator: str) -> None:
+    seg = Segmenter(max_segment_tokens=10)
+    out = seg.feed(_toks("これは", f"テスト{terminator}"))
+    assert len(out) == 1
+    assert out[0].text == f"これは テスト{terminator}"
+
+
+def test_cjk_terminator_alone_ends_segment() -> None:
+    assert ends_segment(Token("終わり。", 0, 1)) is True
+    assert ends_segment(Token("元気ですか？", 0, 1)) is True
+    assert ends_segment(Token("すごい！", 0, 1)) is True
+    # A CJK token without a terminal mark stays open.
+    assert ends_segment(Token("こんにちは", 0, 1)) is False
+
+
 def test_terminator_with_trailing_quote_still_closes() -> None:
     assert ends_segment(Token('done."', 0, 1)) is True
     assert ends_segment(Token("word", 0, 1)) is False
+    # CJK terminator followed by a CJK closing corner bracket still closes.
+    assert ends_segment(Token("終わり。」", 0, 1)) is True
+    assert ends_segment(Token("「はい」", 0, 1)) is False
 
 
 def test_multiple_sentences_in_one_feed_produce_multiple_segments() -> None:

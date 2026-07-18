@@ -27,6 +27,7 @@ __all__ = [
     "FIXTURES",
     "BenchFixture",
     "BenchResult",
+    "cjk_ja_fixture",
     "default_fixture",
     "get_fixture",
     "late_revision_fixture",
@@ -154,12 +155,45 @@ def late_revision_fixture() -> BenchFixture:
     )
 
 
+def cjk_ja_fixture() -> BenchFixture:
+    """A two-sentence Japanese fixture that closes on CJK sentence terminators.
+
+    Japanese writes no inter-word spaces and ends sentences with the ideographic
+    full stop ``。`` and the full-width question mark ``？`` rather than ASCII
+    ``.`` / ``?``. With the CJK terminator set each sentence closes on its own
+    mark — instead of being force-flushed only at the ``max_segment_tokens`` cap
+    — so MT/TTS fire per sentence exactly as they do for English, and the
+    synthesized audio still shows zero retraction.
+    """
+    utt1 = [
+        _hyp(["これは"]),
+        _hyp(["これは", "テストです。"]),
+        _hyp(["これは", "テストです。"], is_final=True),
+    ]
+    utt2 = [
+        _hyp(["お元気"]),
+        _hyp(["お元気", "ですか？"]),
+        _hyp(["お元気", "ですか？"], is_final=True),
+    ]
+    translations = {
+        "これは テストです。": "this is a test.",
+        "お元気 ですか？": "how are you?",
+    }
+    return BenchFixture(
+        name="cjk-ja-2sent",
+        utterances=[utt1, utt2],
+        translations=translations,
+        frame_count=12,
+    )
+
+
 #: Named, built-in benchmark fixtures. ``get_fixture`` builds a fresh instance
 #: per call (each factory returns immutable-by-intent but list-backed data, so a
 #: registry of factories keeps callers isolated from one another).
 FIXTURES: dict[str, Callable[[], BenchFixture]] = {
     "default-en-2sent": default_fixture,
     "late-revision-en": late_revision_fixture,
+    "cjk-ja-2sent": cjk_ja_fixture,
 }
 
 

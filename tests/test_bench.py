@@ -12,6 +12,7 @@ import pytest
 
 from interpret_live.bench import (
     FIXTURES,
+    cjk_ja_fixture,
     default_fixture,
     get_fixture,
     late_revision_fixture,
@@ -28,8 +29,8 @@ def _disagreements_and_retractions(agreement_n: int) -> tuple[int, int]:
     return result.report.total_post_commit_disagreement, result.retraction_count
 
 
-def test_registry_lists_both_builtin_fixtures() -> None:
-    assert set(FIXTURES) == {"default-en-2sent", "late-revision-en"}
+def test_registry_lists_all_builtin_fixtures() -> None:
+    assert set(FIXTURES) == {"default-en-2sent", "late-revision-en", "cjk-ja-2sent"}
 
 
 def test_get_fixture_returns_named_fixture() -> None:
@@ -52,6 +53,32 @@ def test_get_fixture_unknown_name_lists_available() -> None:
 def test_builtin_factories_are_registered() -> None:
     assert FIXTURES["default-en-2sent"] is default_fixture
     assert FIXTURES["late-revision-en"] is late_revision_fixture
+    assert FIXTURES["cjk-ja-2sent"] is cjk_ja_fixture
+
+
+def test_cjk_fixture_closes_on_terminators_and_runs_stably() -> None:
+    """The Japanese sentences close on their own CJK terminators — not the token
+    cap or the end-of-utterance flush — and the run stays audio-stage stable."""
+    from interpret_live.segment import Segmenter
+
+    fixture = cjk_ja_fixture()
+    assert fixture.name == "cjk-ja-2sent"
+
+    # Each sentence closes on ``feed`` — on the ideographic ``。`` / ``？`` — while
+    # far below the token cap, so it is a real mid-utterance close, not a forced
+    # flush and not the trailing end-of-utterance ``flush``.
+    for utterance in fixture.utterances:
+        seg = Segmenter(max_segment_tokens=100)
+        closed = seg.feed(utterance[-1].tokens)
+        assert len(closed) == 1
+        assert closed[0].closed is True
+        assert closed[0].text[-1] in {"。", "！", "？"}
+
+    result = asyncio.run(run_bench(fixture))
+    assert result.retraction_count == 0
+    assert len(result.report.utterances) == 2
+    assert all(u.first_audio_out_ms and u.first_audio_out_ms > 0 for u in result.report.utterances)
+    assert result.played_samples.size > 0
 
 
 def test_late_revision_makes_the_agreement_n_tradeoff_visible() -> None:
