@@ -215,7 +215,7 @@ class S2SPipeline:
 
     async def _pump(self, source_frames: AsyncIterator[AudioFrame]) -> None:
         """Receiver fills a bounded event queue; the scheduler consumes it."""
-        event_q: asyncio.Queue[S2SEvent | None | BaseException] = asyncio.Queue(
+        event_q: asyncio.Queue[S2SEvent | BaseException | None] = asyncio.Queue(
             maxsize=self._config.queue_maxsize
         )
 
@@ -242,7 +242,7 @@ class S2SPipeline:
                 await self._settle_watchers(gen_seq)
 
     async def _schedule_events(
-        self, event_q: asyncio.Queue[S2SEvent | None | BaseException]
+        self, event_q: asyncio.Queue[S2SEvent | BaseException | None]
     ) -> None:
         while True:
             get_task = asyncio.create_task(event_q.get(), name="s2s-event-get")
