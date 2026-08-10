@@ -151,6 +151,8 @@ Other commands:
 
 ```bash
 interpret-live models download --backend offline --from en --to es   # visible, cached prefetch
+interpret-live models list                                           # inspect cached artifacts + size
+interpret-live models clear --yes                                    # reclaim disk space
 interpret-live run --from en --to es --backend offline               # live offline session
 interpret-live run --from en --to es --backend cloud --openai-voice marin
 interpret-live devices                                   # list audio devices (needs [audio])

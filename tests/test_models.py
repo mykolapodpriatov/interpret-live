@@ -18,6 +18,7 @@ import pytest
 from interpret_live.models import (
     NLLB_REPO,
     WHISPER_REPOS,
+    CachedArtifact,
     ChecksumMismatchError,
     ModelManager,
     ModelResolutionError,
@@ -298,3 +299,90 @@ def test_purge_removes_cache_root(tmp_path: Any, patched_manifest: dict[str, byt
     assert os.path.isdir(manager.cache_dir)
     manager.purge()
     assert not os.path.isdir(manager.cache_dir)
+
+
+def test_list_cached_on_missing_cache_root_is_empty(tmp_path: Any) -> None:
+    manager = ModelManager(cache_dir=str(tmp_path / "never-created"))
+    assert manager.list_cached() == []
+
+
+def test_list_cached_reports_piper_and_hf_artifacts_with_sizes(
+    tmp_path: Any, patched_manifest: dict[str, bytes]
+) -> None:
+    def fake_snapshot(repo: str, revision: str, cache_dir: str, *, local_files_only: bool) -> str:
+        snapshot_dir = os.path.join(
+            cache_dir, f"models--{repo.replace('/', '--')}", "snapshots", revision
+        )
+        os.makedirs(snapshot_dir, exist_ok=True)
+        with open(os.path.join(snapshot_dir, "model.bin"), "wb") as handle:
+            handle.write(b"m" * 128)
+        return snapshot_dir
+
+    manager = ModelManager(
+        cache_dir=str(tmp_path), fetcher=FakeFetch(patched_manifest), hf_snapshot=fake_snapshot
+    )
+    manager.resolve_piper_voice(VOICE)
+    manager.resolve_whisper("small")
+    manager.resolve_nllb(NLLB_REPO)
+
+    artifacts = manager.list_cached()
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    whisper_repo, _revision = WHISPER_REPOS["small"]
+    assert f"whisper:{whisper_repo}" in by_name
+    assert f"nllb:{NLLB_REPO}" in by_name
+    assert f"piper:{VOICE}" in by_name
+    for artifact in artifacts:
+        assert artifact.size_bytes > 0
+        assert os.path.isdir(artifact.path)
+
+
+def test_list_cached_passes_through_non_hub_dirnames_unchanged(tmp_path: Any) -> None:
+    # Not every ``hf_snapshot`` implementation lays out ``models--org--repo``
+    # directories (e.g. a custom injected one); such names pass through as-is.
+    hf_dir = os.path.join(str(tmp_path), "hf", "custom-cache-entry")
+    os.makedirs(hf_dir, exist_ok=True)
+    with open(os.path.join(hf_dir, "f.bin"), "wb") as handle:
+        handle.write(b"z" * 5)
+
+    manager = ModelManager(cache_dir=str(tmp_path))
+    assert manager.list_cached() == [
+        CachedArtifact(name="hf:custom-cache-entry", path=hf_dir, size_bytes=5)
+    ]
+
+
+def test_list_cached_labels_unrecognized_hf_repo_generically(tmp_path: Any) -> None:
+    def fake_snapshot(repo: str, revision: str, cache_dir: str, *, local_files_only: bool) -> str:
+        snapshot_dir = os.path.join(
+            cache_dir, f"models--{repo.replace('/', '--')}", "snapshots", revision
+        )
+        os.makedirs(snapshot_dir, exist_ok=True)
+        with open(os.path.join(snapshot_dir, "f.bin"), "wb") as handle:
+            handle.write(b"abc")
+        return snapshot_dir
+
+    manager = ModelManager(cache_dir=str(tmp_path), hf_snapshot=fake_snapshot)
+    manager.resolve_nllb("some-org/custom-model")
+    artifacts = manager.list_cached()
+    assert [a.name for a in artifacts] == ["hf:some-org/custom-model"]
+
+
+def test_list_cached_dedups_symlinked_hf_blobs(tmp_path: Any) -> None:
+    """Real Hub caches expose blob content via symlinks; size must count once."""
+
+    def fake_snapshot(repo: str, revision: str, cache_dir: str, *, local_files_only: bool) -> str:
+        repo_dir = os.path.join(cache_dir, f"models--{repo.replace('/', '--')}")
+        blobs_dir = os.path.join(repo_dir, "blobs")
+        snapshot_dir = os.path.join(repo_dir, "snapshots", revision)
+        os.makedirs(blobs_dir, exist_ok=True)
+        os.makedirs(snapshot_dir, exist_ok=True)
+        blob_path = os.path.join(blobs_dir, "deadbeef")
+        with open(blob_path, "wb") as handle:
+            handle.write(b"y" * 1000)
+        os.symlink(blob_path, os.path.join(snapshot_dir, "model.bin"))
+        return snapshot_dir
+
+    manager = ModelManager(cache_dir=str(tmp_path), hf_snapshot=fake_snapshot)
+    manager.resolve_whisper("small")
+    artifacts = manager.list_cached()
+    assert len(artifacts) == 1
+    assert artifacts[0].size_bytes == 1000

@@ -283,6 +283,106 @@ def test_models_download_success_prints_resolved_table(monkeypatch, tmp_path) ->
     assert "license/source" in result.output
 
 
+def test_models_list_empty_cache_reports_empty(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = runner.invoke(app, ["models", "list", "--cache-dir", str(tmp_path / "empty")])
+    assert result.exit_code == 0, result.output
+    assert "cache is empty" in result.output
+
+
+def test_models_list_prints_table_with_sizes(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.models as models_mod
+
+    artifact = models_mod.CachedArtifact(
+        name="piper:es_ES-davefx-medium",
+        path=str(tmp_path / "piper" / "es_ES-davefx-medium"),
+        size_bytes=2_500_000,
+    )
+
+    class FakeManager:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.cache_dir = str(tmp_path)
+
+        def list_cached(self):  # type: ignore[no-untyped-def]
+            return [artifact]
+
+    monkeypatch.setattr(models_mod, "ModelManager", FakeManager)
+    result = runner.invoke(app, ["models", "list"])
+    assert result.exit_code == 0, result.output
+    assert "cached model artifacts" in result.output
+    assert "piper:es_ES-davefx-medium" in result.output
+    assert "2.4 MB" in result.output
+    assert "total:" in result.output
+
+
+def test_models_clear_empty_cache_reports_nothing_to_delete(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    result = runner.invoke(app, ["models", "clear", "--cache-dir", str(tmp_path / "empty")])
+    assert result.exit_code == 0, result.output
+    assert "already empty" in result.output
+
+
+def test_models_clear_requires_confirmation_and_aborts_on_no(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.models as models_mod
+
+    artifact = models_mod.CachedArtifact(name="piper:v", path=str(tmp_path), size_bytes=1024)
+    purged: list[bool] = []
+
+    class FakeManager:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.cache_dir = str(tmp_path)
+
+        def list_cached(self):  # type: ignore[no-untyped-def]
+            return [artifact]
+
+        def purge(self):  # type: ignore[no-untyped-def]
+            purged.append(True)
+
+    monkeypatch.setattr(models_mod, "ModelManager", FakeManager)
+    result = runner.invoke(app, ["models", "clear"], input="n\n")
+    assert result.exit_code == 1
+    assert "aborted" in result.output
+    assert not purged
+
+
+def test_models_clear_yes_flag_skips_prompt_and_purges(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.models as models_mod
+
+    artifact = models_mod.CachedArtifact(name="piper:v", path=str(tmp_path), size_bytes=1024)
+    purged: list[bool] = []
+
+    class FakeManager:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.cache_dir = str(tmp_path)
+
+        def list_cached(self):  # type: ignore[no-untyped-def]
+            return [artifact]
+
+        def purge(self):  # type: ignore[no-untyped-def]
+            purged.append(True)
+
+    monkeypatch.setattr(models_mod, "ModelManager", FakeManager)
+    result = runner.invoke(app, ["models", "clear", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "freed" in result.output
+    assert purged == [True]
+
+
+def test_models_list_and_clear_walk_a_real_cache_dir(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    cache_dir = tmp_path / "cache"
+    voice_dir = cache_dir / "piper" / "es_ES-davefx-medium"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "voice.onnx").write_bytes(b"x" * 2048)
+
+    result = runner.invoke(app, ["models", "list", "--cache-dir", str(cache_dir)])
+    assert result.exit_code == 0, result.output
+    assert "piper:es_ES-davefx-medium" in result.output
+    assert "2.0 KB" in result.output
+
+    result = runner.invoke(app, ["models", "clear", "--cache-dir", str(cache_dir), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "freed" in result.output
+    assert not cache_dir.exists()
+
+
 def test_devices_lists_table_with_fake_sd(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import sys
 
