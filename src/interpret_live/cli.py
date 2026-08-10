@@ -354,8 +354,68 @@ def models_download(
         console.print(f"voice license/source: {entry['license_url']}", markup=False)
 
 
+@models_app.command("list")
+def models_list(
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Model cache root."),
+) -> None:
+    """List cached model artifacts (whisper/NLLB snapshots, Piper voices) with sizes."""
+    from .models import ModelManager
+
+    manager = ModelManager(cache_dir=cache_dir)
+    artifacts = manager.list_cached()
+    if not artifacts:
+        console.print(f"cache is empty: {manager.cache_dir}", markup=False)
+        return
+    table = Table(title=f"cached model artifacts (cache: {manager.cache_dir})")
+    table.add_column("artifact")
+    table.add_column("size", justify="right")
+    table.add_column("path")
+    total_bytes = 0
+    for artifact in artifacts:
+        total_bytes += artifact.size_bytes
+        table.add_row(artifact.name, _fmt_size(artifact.size_bytes), artifact.path)
+    console.print(table)
+    console.print(f"total: {_fmt_size(total_bytes)}", markup=False)
+
+
+@models_app.command("clear")
+def models_clear(
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Model cache root."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt and delete immediately."
+    ),
+) -> None:
+    """Delete every cached model artifact (whisper/NLLB snapshots, Piper voices)."""
+    from .models import ModelManager
+
+    manager = ModelManager(cache_dir=cache_dir)
+    artifacts = manager.list_cached()
+    if not artifacts:
+        console.print(f"cache is already empty: {manager.cache_dir}", markup=False)
+        return
+    total_bytes = sum(artifact.size_bytes for artifact in artifacts)
+    if not yes and not typer.confirm(
+        f"Delete {len(artifacts)} cached artifact(s) ({_fmt_size(total_bytes)}) "
+        f"from {manager.cache_dir}?"
+    ):
+        console.print("aborted; nothing deleted.")
+        raise typer.Exit(code=1)
+    manager.purge()
+    console.print(f"freed {_fmt_size(total_bytes)} from {manager.cache_dir}", markup=False)
+
+
 def _fmt(value: int | None) -> str:
     return "-" if value is None else str(value)
+
+
+def _fmt_size(num_bytes: int) -> str:
+    """Human-readable byte size using binary (1024-based) units."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
 
 
 if __name__ == "__main__":  # pragma: no cover

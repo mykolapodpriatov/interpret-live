@@ -45,6 +45,7 @@ from .model_worker import ModelWorker, raise_if_cancelled
 
 __all__ = [
     "WHISPER_REPOS",
+    "CachedArtifact",
     "ChecksumMismatchError",
     "ModelManager",
     "ModelResolutionError",
@@ -112,6 +113,27 @@ class ResolvedArtifact:
     requested_revision: str | None
     resolved_revision: str | None
     provenance: str
+
+
+@dataclass(frozen=True, slots=True)
+class CachedArtifact:
+    """A model artifact already present in the cache, discovered by inspection.
+
+    Unlike :class:`ResolvedArtifact` (which names a *requested* artifact),
+    this describes what ``models list``/``models clear`` actually find on
+    disk, with a size so freed space is reportable.
+
+    Attributes:
+        name: Best-effort logical name (``whisper:<repo>``, ``nllb:<repo>``,
+            ``hf:<repo>`` for unrecognized Hugging Face repos, or
+            ``piper:<voice>``).
+        path: Absolute directory holding the artifact's files.
+        size_bytes: Total on-disk size of the artifact's files.
+    """
+
+    name: str
+    path: str
+    size_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +452,39 @@ class ModelManager:
         """Delete the entire cache root (used by tests/maintenance)."""
         shutil.rmtree(self._cache_dir, ignore_errors=True)
 
+    # ----- cache inspection -------------------------------------------------------
+
+    def list_cached(self) -> list[CachedArtifact]:
+        """List every model artifact already present in the cache, with sizes.
+
+        A pure filesystem walk of the cache root's known subdirectories (``hf``
+        for Hugging Face snapshots, ``piper`` for directly managed voices) — it
+        makes no assumption about what a particular run needs and performs no
+        network access. Returns ``[]`` if the cache root doesn't exist yet.
+        """
+        artifacts: list[CachedArtifact] = []
+        hf_root = os.path.join(self._cache_dir, "hf")
+        if os.path.isdir(hf_root):
+            for entry in sorted(os.listdir(hf_root)):
+                path = os.path.join(hf_root, entry)
+                if os.path.isdir(path):
+                    artifacts.append(
+                        CachedArtifact(
+                            name=_hf_artifact_name(_repo_id_from_cache_dirname(entry)),
+                            path=path,
+                            size_bytes=_dir_size(path),
+                        )
+                    )
+        piper_root = os.path.join(self._cache_dir, "piper")
+        if os.path.isdir(piper_root):
+            for entry in sorted(os.listdir(piper_root)):
+                path = os.path.join(piper_root, entry)
+                if os.path.isdir(path):
+                    artifacts.append(
+                        CachedArtifact(name=f"piper:{entry}", path=path, size_bytes=_dir_size(path))
+                    )
+        return artifacts
+
 
 def _sha256_of(path: str) -> str:
     digest = hashlib.sha256()
@@ -437,6 +492,48 @@ def _sha256_of(path: str) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _repo_id_from_cache_dirname(dirname: str) -> str:
+    """Best-effort decode of the Hugging Face Hub cache dir naming convention.
+
+    The Hub's own cache lays out ``models--<org>--<repo>`` directories; other
+    ``hf_snapshot`` implementations (including tests) may use a plain repo id
+    directly, so unrecognized names pass through unchanged.
+    """
+    if dirname.startswith("models--"):
+        return dirname.removeprefix("models--").replace("--", "/")
+    return dirname
+
+
+def _hf_artifact_name(repo_id: str) -> str:
+    """Label a Hugging Face cache entry by known category, falling back to 'hf'."""
+    if repo_id in {repo for repo, _revision in WHISPER_REPOS.values()}:
+        return f"whisper:{repo_id}"
+    if repo_id == NLLB_REPO:
+        return f"nllb:{repo_id}"
+    return f"hf:{repo_id}"
+
+
+def _dir_size(path: str) -> int:
+    """Total size in bytes of regular files under ``path``.
+
+    Hugging Face Hub caches store real content once under ``blobs/`` and
+    expose it via symlinks under ``snapshots/<revision>/``; resolving each
+    file's real path before counting avoids double-billing the same bytes.
+    """
+    total = 0
+    seen: set[str] = set()
+    for root, _dirs, files in os.walk(path):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            real_path = os.path.realpath(file_path)
+            if real_path in seen:
+                continue
+            seen.add(real_path)
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(file_path)
+    return total
 
 
 def build_preflight_handler(*, cache_dir: str | None, offline: bool) -> Any:

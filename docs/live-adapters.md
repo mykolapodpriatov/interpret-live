@@ -53,6 +53,21 @@ interpret-live models download --backend offline --from en --to es
 - `run` performs the same non-interactive preflight automatically when
   artifacts are missing.
 
+Inspect or reclaim the cache without touching the network:
+
+```bash
+interpret-live models list                 # cached artifacts + on-disk size
+interpret-live models clear                 # prompts, then deletes the whole cache root
+interpret-live models clear --yes           # skip the confirmation prompt
+```
+
+- `models list` walks the cache root and prints every resolved whisper/NLLB
+  snapshot and Piper voice it finds, with size and path; both commands accept
+  `--cache-dir` to target a non-default cache root.
+- `models clear` reports how many artifacts and bytes it would remove, asks
+  for confirmation (unless `--yes`), then calls the same purge used by
+  maintenance/tests and prints how much space was freed.
+
 **Offline mode** (`--offline`) performs no network access at all; if anything
 is missing it lists **every** missing artifact in one error:
 
