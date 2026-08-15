@@ -19,6 +19,7 @@ from rich.table import Table
 from . import __version__
 from .bench import FIXTURES, get_fixture, run_bench
 from .config import PipelineConfig
+from .metrics import MetricsReport
 
 app = typer.Typer(
     name="interpret-live",
@@ -27,6 +28,63 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# Lower-is-better scalars CI can gate with ``--fail-under NAME=VALUE``.
+# Report-level names match ``MetricsReport.to_dict``; ``commit_to_audio_ms``
+# and ``commit_lag_ms`` are the worst (max) per-utterance value.
+_BENCH_FAIL_UNDER_METRICS: tuple[str, ...] = (
+    "total_retractions",
+    "total_post_commit_disagreement",
+    "max_first_audio_out_ms",
+    "max_barge_in_stop_ms",
+    "commit_to_audio_ms",
+    "commit_lag_ms",
+)
+
+
+def _parse_fail_under(specs: list[str]) -> list[tuple[str, float]]:
+    """Parse ``NAME=VALUE`` gates; unknown names or bad specs are usage errors."""
+    parsed: list[tuple[str, float]] = []
+    known = ", ".join(_BENCH_FAIL_UNDER_METRICS)
+    for spec in specs:
+        if "=" not in spec:
+            typer.echo(f"expected NAME=VALUE, got {spec!r}; known: {known}", err=True)
+            raise typer.Exit(code=2)
+        name, _, raw = spec.partition("=")
+        name = name.strip()
+        if name not in _BENCH_FAIL_UNDER_METRICS:
+            typer.echo(f"unknown metric {name!r}; known: {known}", err=True)
+            raise typer.Exit(code=2)
+        try:
+            threshold = float(raw)
+        except ValueError:
+            typer.echo(f"threshold must be a number, got {raw!r}", err=True)
+            raise typer.Exit(code=2) from None
+        parsed.append((name, threshold))
+    return parsed
+
+
+def _bench_metric_value(report: MetricsReport, name: str) -> float | None:
+    """Return the named gate value, or ``None`` when the run has no sample."""
+    if name == "total_retractions":
+        return float(report.total_retractions)
+    if name == "total_post_commit_disagreement":
+        return float(report.total_post_commit_disagreement)
+    if name == "max_first_audio_out_ms":
+        value = report.max_first_audio_out_ms
+        return None if value is None else float(value)
+    if name == "max_barge_in_stop_ms":
+        value = report.max_barge_in_stop_ms
+        return None if value is None else float(value)
+    if name == "commit_to_audio_ms":
+        samples = [
+            u.commit_to_audio_ms for u in report.utterances if u.commit_to_audio_ms is not None
+        ]
+        return float(max(samples)) if samples else None
+    if name == "commit_lag_ms":
+        samples = [u.commit_lag_ms for u in report.utterances if u.commit_lag_ms is not None]
+        return float(max(samples)) if samples else None
+    raise KeyError(name)  # pragma: no cover - parser already rejects unknown names
 
 
 def _version_callback(value: bool) -> None:
@@ -63,6 +121,11 @@ def bench(
         "--list-fixtures",
         help="List built-in fixtures with a one-line description and exit.",
     ),
+    fail_under: list[str] | None = typer.Option(
+        None,
+        "--fail-under",
+        help="Fail if METRIC exceeds VALUE (repeatable). Example: commit_to_audio_ms=800.",
+    ),
 ) -> None:
     """Replay a fixture through fake backends and print latency + stability."""
     if list_fixtures:
@@ -71,6 +134,7 @@ def bench(
         for name in sorted(FIXTURES):
             console.print(f"{name}  {FIXTURES[name]().description}", highlight=False)
         raise typer.Exit(code=0)
+    gates = _parse_fail_under(fail_under or [])
     cfg = PipelineConfig(agreement_n=agreement_n, max_segment_tokens=max_segment_tokens)
     try:
         fixture = get_fixture(fixture_name)
@@ -113,8 +177,17 @@ def bench(
         console.print(f"played segments (in order): {list(result.played_segments)}")
         console.print(f"synthesized samples: {result.played_samples.size}")
     # Exit-code contract holds in both modes: a retraction (audio-stage
-    # instability) is a hard failure that CI can gate on.
-    if result.retraction_count != 0:
+    # instability) is a hard failure that CI can gate on. --fail-under is
+    # checked after stdout so ``--json`` still captures the artifact.
+    breached = result.retraction_count != 0
+    for name, threshold in gates:
+        actual = _bench_metric_value(report, name)
+        if actual is None:
+            continue
+        if actual > threshold:
+            typer.echo(f"FAIL {name} {actual} > {threshold}", err=True)
+            breached = True
+    if breached:
         raise typer.Exit(code=1)
 
 
