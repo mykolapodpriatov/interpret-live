@@ -253,6 +253,19 @@ class MetricEvent:
     utterance_id: str
     detail: dict[str, int | str] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable mapping of this event.
+
+        Explicit schema (not ``asdict``-derived) so a session JSONL log can
+        reuse this type without a parallel event shape.
+        """
+        return {
+            "kind": self.kind,
+            "t_ms": self.t_ms,
+            "utterance_id": self.utterance_id,
+            "detail": dict(self.detail),
+        }
+
 
 @runtime_checkable
 class AudioSource(Protocol):

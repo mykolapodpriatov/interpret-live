@@ -255,6 +255,21 @@ async def test_stuck_adapter_close_is_bounded_by_shutdown_budget() -> None:
     assert time.monotonic() - started < 5.0
 
 
+async def test_on_event_receives_metric_events_from_fake_session() -> None:
+    clock = ManualClock()
+    recorder = _Recorder()
+    events: list[Any] = []
+    opts = RuntimeOptions(backend="offline")
+    task = asyncio.ensure_future(
+        run_session(opts, deps=_deps(recorder, clock), on_event=events.append)
+    )
+    await _drive_to_completion(task, clock)
+    await task
+    kinds = [event.kind for event in events]
+    assert events, "a fake-backend session must emit metric events"
+    assert "commit" in kinds or "utterance_start" in kinds or "first_tts_out" in kinds
+
+
 async def test_nondefault_pipeline_config_reaches_session_create(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+from typing import IO
 
 import typer
 from rich.console import Console
@@ -243,10 +245,16 @@ def run(
     vad_hangover_ms: int = typer.Option(
         200, "--vad-hangover-ms", min=0, help="Trailing silence before the VAD flips to silence."
     ),
+    log_jsonl: Path | None = typer.Option(
+        None,
+        "--log-jsonl",
+        help="Write one JSON object per session event to PATH (streamed, not buffered).",
+    ),
 ) -> None:
     """Run a live interpreting session (requires the relevant optional extras)."""
     from .backends.guard import MissingExtraError
     from .runtime import RuntimeConfigError, RuntimeOptions, run_session
+    from .types import MetricEvent
 
     # Provider-specific voice options must match the selected backend.
     if backend == "offline" and openai_voice is not None:
@@ -286,13 +294,33 @@ def run(
     console.print(
         f"[bold]interpret-live run[/] {source} -> {target} (backend={backend}, dual={dual})"
     )
+    log_fh = _open_jsonl(log_jsonl) if log_jsonl is not None else None
+
+    def _write_jsonl(obj: dict[str, object]) -> None:
+        assert log_fh is not None
+        log_fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        log_fh.flush()
+
+    def _on_event(event: MetricEvent) -> None:
+        _write_jsonl(event.to_dict())
+
+    def _on_warning(message: str) -> None:
+        console.print(f"[yellow]warning:[/] {message}", highlight=False)
+        if log_fh is not None:
+            _write_jsonl({"kind": "warning", "message": message})
+
+    reports = []
     try:
         reports = asyncio.run(
             run_session(
                 opts,
-                on_warning=lambda w: console.print(f"[yellow]warning:[/] {w}", highlight=False),
+                on_warning=_on_warning,
+                on_event=_on_event if log_fh is not None else None,
             )
         )
+        if log_fh is not None:
+            for report in reports:
+                _write_jsonl({"kind": "metrics", **report.to_dict()})
     except RuntimeConfigError as exc:
         console.print(str(exc), markup=False, style="red")
         raise typer.Exit(code=2) from exc
@@ -306,6 +334,9 @@ def run(
     except Exception as exc:  # pragma: no cover - depends on live resources
         console.print(str(exc), markup=False, style="red")
         raise typer.Exit(code=1) from exc
+    finally:
+        if log_fh is not None:
+            log_fh.close()
     # Success only after a session actually ran (or the user stopped it).
     for index, report in enumerate(reports):
         _print_report(report, title=f"direction {index + 1}" if len(reports) > 1 else "session")
@@ -492,6 +523,16 @@ def models_clear(
         raise typer.Exit(code=1)
     manager.purge()
     console.print(f"freed {_fmt_size(total_bytes)} from {manager.cache_dir}", markup=False)
+
+
+def _open_jsonl(path: Path) -> IO[str]:
+    """Create parent dirs and open PATH for streaming JSONL; fail before the session."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open("w", encoding="utf-8")
+    except OSError as exc:
+        console.print(f"cannot write --log-jsonl {path}: {exc}", markup=False, style="red")
+        raise typer.Exit(code=2) from exc
 
 
 def _fmt(value: int | None) -> str:

@@ -379,6 +379,8 @@ class DualChannel:
         clock: Clock,
         config: PipelineConfig | None = None,
         enable_barge_in: bool = False,
+        metrics: MetricsLog | None = None,
+        metrics_b: MetricsLog | None = None,
     ) -> DualChannel:
         """Build a dual-channel pair from two independently built backends.
 
@@ -400,6 +402,7 @@ class DualChannel:
             config=config,
             enable_barge_in=enable_barge_in,
             for_dual=True,
+            metrics=metrics,
         )
         b_to_a = Session.create(
             backend=backend_b_to_a,
@@ -409,6 +412,7 @@ class DualChannel:
             config=config,
             enable_barge_in=enable_barge_in,
             for_dual=True,
+            metrics=metrics_b,
         )
         return cls(a_to_b=a_to_b, b_to_a=b_to_a)
 

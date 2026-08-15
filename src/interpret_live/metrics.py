@@ -21,6 +21,7 @@ Everything is computed from the log, so metrics are reproducible in tests.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .types import MetricEvent
@@ -97,9 +98,9 @@ class MetricsReport:
 class MetricsLog:
     """An append-only, in-memory log of :class:`MetricEvent` with derivations."""
 
-    __slots__ = ("_events", "_retractions", "_retractions_by_utt")
+    __slots__ = ("_events", "_on_event", "_retractions", "_retractions_by_utt")
 
-    def __init__(self) -> None:
+    def __init__(self, on_event: Callable[[MetricEvent], None] | None = None) -> None:
         self._events: list[MetricEvent] = []
         # Audio retractions are tracked explicitly; on the stable path this stays
         # 0 (the committed prefix never retracts, so no spoken audio is recalled).
@@ -108,6 +109,9 @@ class MetricsLog:
         # count rather than a hardcoded 0 (retractions attributed to an utterance
         # are recorded with its id).
         self._retractions_by_utt: dict[str, int] = {}
+        # Optional live sink (session JSONL): invoked on every append, not at
+        # report() time, so a crash still leaves a flushed tail.
+        self._on_event = on_event
 
     @property
     def events(self) -> tuple[MetricEvent, ...]:
@@ -122,6 +126,8 @@ class MetricsLog:
     def append(self, event: MetricEvent) -> None:
         """Record a metric event."""
         self._events.append(event)
+        if self._on_event is not None:
+            self._on_event(event)
 
     def record_retraction(self, count: int = 1, *, utterance_id: str | None = None) -> None:
         """Record ``count`` audio retractions (used only if audio is recalled).
