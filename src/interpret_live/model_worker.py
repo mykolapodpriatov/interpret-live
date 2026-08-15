@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import importlib
 import multiprocessing
+import os
 import queue as queue_mod
 import signal
 import threading
@@ -105,6 +106,34 @@ def _child_main(
     res_q.put(("closed", None, None))
 
 
+def _child_entry(
+    factory_path: str,
+    factory_kwargs: dict[str, Any],
+    req_q: Any,
+    res_q: Any,
+    cancel_event: Any,
+) -> None:
+    """Spawn target: run the handler loop, then hard-exit.
+
+    Returning into interpreter shutdown finalizes inherited Queue/Event
+    semaphores and can ``_stop`` the parent's resource tracker (CPython
+    gh-109629). That re-enters the tracker; pytest then fails the test with
+    ``ReentrantCallError`` unraisables. ``os._exit`` skips those handlers —
+    the parent owns the resources and unregisters them in :meth:`ModelWorker.aclose`.
+    """
+    try:
+        _child_main(factory_path, factory_kwargs, req_q, res_q, cancel_event)
+    finally:
+        # Flush the last ready/fatal/closed payload before vanishing so the
+        # parent still observes startup failure on a short-lived child.
+        for q in (res_q, req_q):
+            with contextlib.suppress(Exception):
+                q.close()
+            with contextlib.suppress(Exception):
+                q.join_thread()
+        os._exit(0)
+
+
 class ModelWorker:
     """One spawned, long-lived model process behind an async request API.
 
@@ -175,7 +204,7 @@ class ModelWorker:
         self._loop = asyncio.get_running_loop()
         self._ready = self._loop.create_future()
         self._proc = self._ctx.Process(
-            target=_child_main,
+            target=_child_entry,
             args=(
                 self._factory,
                 self._factory_kwargs,
@@ -299,6 +328,10 @@ class ModelWorker:
             if proc.is_alive():  # pragma: no cover - kill is a last resort
                 proc.kill()
                 await asyncio.to_thread(proc.join, self._grace_s)
+        elif proc is not None:
+            # Already-dead child (startup-fail): still reap before closing
+            # queues so Process/queue finalizers cannot race the tracker.
+            await asyncio.to_thread(proc.join, self._grace_s)
         self._reader_stop.set()
         if self._reader is not None:
             await asyncio.to_thread(self._reader.join, self._grace_s)
