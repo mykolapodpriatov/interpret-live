@@ -149,6 +149,10 @@ interpret-live run --backend offline --from en --to es --dual \
 | `--voice` / `--voice-b` | Piper voice id from the manifest, or a local `.onnx` path |
 | `--openai-voice` / `--openai-model` | Realtime output voice / model id |
 | `--no-barge-in` | disable the barge-in interrupt |
+| `--agreement-n` | LocalAgreement window (higher = more stable, more latent); default 2 |
+| `--max-segment-tokens` | Forced-flush cap for an open segment; default 24 |
+| `--vad-threshold` | RMS speech threshold for the energy VAD; default 0.02 |
+| `--vad-hangover-ms` | Trailing silence before the VAD flips to silence; default 200 |
 
 ## Troubleshooting
 
@@ -162,8 +166,8 @@ interpret-live run --backend offline --from en --to es --dual \
   underruns; a loaded machine or an aggressive DAW grabbing the device are the
   usual causes. Try the device's default rate (omit overrides).
 - **Nothing is transcribed** — the endpointing VAD needs speech above its RMS
-  threshold; check the mic input level, or lower `vad_threshold` when using
-  the library API.
+  threshold; check the mic input level, or lower it with `--vad-threshold`
+  (or `PipelineConfig.vad_threshold` on the library API).
 - **Cloud session ends with `realtime connection failed`** — the transport
   never reconnects silently after audio has been sent (replay could duplicate
   or lose speech); restart the run.

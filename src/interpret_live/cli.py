@@ -160,6 +160,16 @@ def run(
     barge_in: bool = typer.Option(
         True, "--barge-in/--no-barge-in", help="Interrupt playback when the speaker resumes."
     ),
+    agreement_n: int = typer.Option(2, "--agreement-n", min=1, help="LocalAgreement window."),
+    max_segment_tokens: int = typer.Option(
+        24, "--max-segment-tokens", min=1, help="Forced-flush segment cap."
+    ),
+    vad_threshold: float = typer.Option(
+        0.02, "--vad-threshold", min=0.0, help="RMS speech threshold for the energy VAD."
+    ),
+    vad_hangover_ms: int = typer.Option(
+        200, "--vad-hangover-ms", min=0, help="Trailing silence before the VAD flips to silence."
+    ),
 ) -> None:
     """Run a live interpreting session (requires the relevant optional extras)."""
     from .backends.guard import MissingExtraError
@@ -173,6 +183,12 @@ def run(
         console.print("[red]--voice/--voice-b select Piper voices; use --openai-voice[/]")
         raise typer.Exit(code=2)
 
+    pipeline = PipelineConfig(
+        agreement_n=agreement_n,
+        max_segment_tokens=max_segment_tokens,
+        vad_threshold=vad_threshold,
+        vad_hangover_ms=vad_hangover_ms,
+    )
     opts = RuntimeOptions(
         backend=backend,
         provider=provider,
@@ -192,6 +208,7 @@ def run(
         input_device_b=input_device_b,
         output_device_b=output_device_b,
         enable_barge_in=barge_in,
+        pipeline=pipeline,
     )
     console.print(
         f"[bold]interpret-live run[/] {source} -> {target} (backend={backend}, dual={dual})"

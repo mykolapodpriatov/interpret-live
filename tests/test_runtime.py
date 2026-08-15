@@ -19,13 +19,14 @@ from helpers import frame, hyp
 from interpret_live.audio_io import FakeAudioSink, FakeAudioSource
 from interpret_live.backends.fake import FakeMT, FakeS2S, FakeS2STurn, FakeSTT, FakeTTS
 from interpret_live.clock import Clock, ManualClock
-from interpret_live.config import AudioConfig
+from interpret_live.config import AudioConfig, PipelineConfig
 from interpret_live.runtime import (
     RuntimeConfigError,
     RuntimeDeps,
     RuntimeOptions,
     run_session,
 )
+from interpret_live.session import DualChannel, Session
 
 
 class _Recorder:
@@ -252,6 +253,69 @@ async def test_stuck_adapter_close_is_bounded_by_shutdown_budget() -> None:
     await task
     # The wait_for backstop bounded the stuck close (real-time budget 200ms).
     assert time.monotonic() - started < 5.0
+
+
+async def test_nondefault_pipeline_config_reaches_session_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = ManualClock()
+    recorder = _Recorder()
+    captured: list[PipelineConfig] = []
+    real_create = Session.create
+
+    def wrap_create(**kwargs: Any) -> Any:
+        captured.append(kwargs["config"])
+        return real_create(**kwargs)
+
+    monkeypatch.setattr("interpret_live.runtime.Session.create", staticmethod(wrap_create))
+    cfg = PipelineConfig(
+        agreement_n=3, max_segment_tokens=10, vad_threshold=0.05, vad_hangover_ms=80
+    )
+    opts = RuntimeOptions(backend="offline", pipeline=cfg)
+    task = asyncio.ensure_future(run_session(opts, deps=_deps(recorder, clock)))
+    await _drive_to_completion(task, clock)
+    await task
+    assert captured, "Session.create must be invoked"
+    got = captured[0]
+    assert got is cfg
+    assert got.agreement_n == 3
+    assert got.max_segment_tokens == 10
+    assert got.vad_threshold == 0.05
+    assert got.vad_hangover_ms == 80
+
+
+async def test_nondefault_pipeline_config_reaches_dual_channel_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = ManualClock()
+    recorder = _Recorder()
+    captured: list[PipelineConfig] = []
+    real_create = DualChannel.create
+
+    def wrap_create(**kwargs: Any) -> Any:
+        captured.append(kwargs["config"])
+        return real_create(**kwargs)
+
+    monkeypatch.setattr("interpret_live.runtime.DualChannel.create", staticmethod(wrap_create))
+    cfg = PipelineConfig(
+        agreement_n=3, max_segment_tokens=10, vad_threshold=0.05, vad_hangover_ms=80
+    )
+    opts = RuntimeOptions(
+        backend="offline",
+        dual=True,
+        input_device=1,
+        output_device=2,
+        input_device_b=3,
+        output_device_b=4,
+        pipeline=cfg,
+    )
+    task = asyncio.ensure_future(run_session(opts, deps=_deps(recorder, clock)))
+    await _drive_to_completion(task, clock)
+    await task
+    assert captured, "DualChannel.create must be invoked"
+    got = captured[0]
+    assert got is cfg
+    assert got.agreement_n == 3
 
 
 async def test_validation_failures_fire_before_any_construction() -> None:
