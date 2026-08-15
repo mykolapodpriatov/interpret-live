@@ -96,6 +96,10 @@ async def test_startup_failure_surfaces_as_worker_error() -> None:
     )
     with pytest.raises(WorkerError, match="boom at load"):
         await worker.start()
+    # Fail-fast teardown must reap the child before queues close; otherwise
+    # spawn-child atexit re-enters the resource tracker (CI flake).
+    assert worker.pid is None
+    await worker.aclose()
 
 
 async def test_handler_exception_is_serialized_not_fatal() -> None:
