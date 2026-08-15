@@ -223,6 +223,42 @@ def test_models_download_offline_reports_missing(tmp_path) -> None:  # type: ign
     assert "missing from the cache" in result.output
 
 
+def test_run_forwards_pipeline_tunables_to_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.runtime as runtime_mod
+    from interpret_live.config import PipelineConfig
+    from interpret_live.metrics import MetricsLog
+
+    captured: dict[str, PipelineConfig] = {}
+
+    async def fake_run_session(opts, *, deps=None, on_warning=None):  # type: ignore[no-untyped-def]
+        captured["pipeline"] = opts.pipeline
+        return [MetricsLog().report()]
+
+    monkeypatch.setattr(runtime_mod, "run_session", fake_run_session)
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--backend",
+            "offline",
+            "--agreement-n",
+            "3",
+            "--max-segment-tokens",
+            "10",
+            "--vad-threshold",
+            "0.05",
+            "--vad-hangover-ms",
+            "80",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    pipeline = captured["pipeline"]
+    assert pipeline.agreement_n == 3
+    assert pipeline.max_segment_tokens == 10
+    assert pipeline.vad_threshold == 0.05
+    assert pipeline.vad_hangover_ms == 80
+
+
 def test_run_success_path_prints_metrics_summary(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import interpret_live.runtime as runtime_mod
     from interpret_live.metrics import MetricsLog
