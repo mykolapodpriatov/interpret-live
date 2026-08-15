@@ -114,6 +114,36 @@ def test_bench_json_is_byte_identical_across_runs() -> None:
     assert first.output == second.output
 
 
+def test_bench_fail_under_threshold_exits_zero() -> None:
+    result = runner.invoke(app, ["bench", "--fail-under", "total_retractions=1"])
+    assert result.exit_code == 0, result.output
+
+
+def test_bench_fail_under_impossibly_low_threshold_exits_one() -> None:
+    result = runner.invoke(app, ["bench", "--fail-under", "max_first_audio_out_ms=0"])
+    assert result.exit_code == 1
+    err = result.stderr or result.output
+    assert "FAIL max_first_audio_out_ms" in err
+    assert ">" in err
+
+
+def test_bench_fail_under_unknown_metric_exits_two() -> None:
+    result = runner.invoke(app, ["bench", "--fail-under", "not_a_metric=800"])
+    assert result.exit_code == 2
+    err = result.stderr or result.output
+    assert "unknown metric" in err
+    assert "commit_to_audio_ms" in err
+    assert "total_retractions" in err
+
+
+def test_bench_json_still_emits_report_when_fail_under_trips() -> None:
+    result = runner.invoke(app, ["bench", "--json", "--fail-under", "commit_to_audio_ms=0"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout or result.output)
+    assert payload["fixture"] == "default-en-2sent"
+    assert "FAIL commit_to_audio_ms" in (result.stderr or result.output)
+
+
 def test_bench_json_preserves_retraction_exit_code_contract(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """A retraction is still a hard failure (exit 1) under --json, with valid JSON."""
     import numpy as np
