@@ -23,6 +23,24 @@ def _ev(kind: str, t_ms: int, uid: str) -> MetricEvent:
     return MetricEvent(kind=kind, t_ms=t_ms, utterance_id=uid)  # type: ignore[arg-type]
 
 
+def test_metric_event_to_dict_is_json_stable() -> None:
+    event = MetricEvent(kind="commit", t_ms=40, utterance_id="u1", detail={"segment": 0})
+    assert event.to_dict() == {
+        "kind": "commit",
+        "t_ms": 40,
+        "utterance_id": "u1",
+        "detail": {"segment": 0},
+    }
+
+
+def test_metrics_log_on_event_fires_on_append() -> None:
+    seen: list[str] = []
+    log = MetricsLog(on_event=lambda event: seen.append(event.kind))
+    log.append(_ev("utterance_start", 0, "u1"))
+    log.append(_ev("commit", 10, "u1"))
+    assert seen == ["utterance_start", "commit"]
+
+
 def test_first_audio_out_latency_derivation() -> None:
     log = MetricsLog()
     log.append(_ev("utterance_start", 100, "u1"))

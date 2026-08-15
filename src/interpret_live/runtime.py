@@ -28,9 +28,9 @@ from typing import Any
 
 from .clock import Clock, RealClock
 from .config import AudioConfig, PipelineConfig
-from .metrics import MetricsReport
+from .metrics import MetricsLog, MetricsReport
 from .session import DualChannel, PipelineBackend, S2SBackend, Session
-from .types import AudioSink, AudioSource
+from .types import AudioSink, AudioSource, MetricEvent
 
 __all__ = ["RuntimeConfigError", "RuntimeDeps", "RuntimeOptions", "run_session"]
 
@@ -356,6 +356,7 @@ async def run_session(
     *,
     deps: RuntimeDeps | None = None,
     on_warning: Callable[[str], None] | None = None,
+    on_event: Callable[[MetricEvent], None] | None = None,
 ) -> list[MetricsReport]:
     """Build and run one live session (or a dual pair); return its report(s).
 
@@ -404,6 +405,9 @@ async def run_session(
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(aclose(), opts.audio.shutdown_timeout_ms / 1000)
 
+        def _metrics() -> MetricsLog | None:
+            return MetricsLog(on_event=on_event) if on_event is not None else None
+
         if not opts.dual:
             source = deps.make_source(opts, opts.input_device, clock)
             sink = deps.make_sink(opts, opts.output_device, clock)
@@ -415,6 +419,7 @@ async def run_session(
                 clock=clock,
                 config=opts.pipeline,
                 enable_barge_in=opts.enable_barge_in,
+                metrics=_metrics(),
             )
             await _run_cancellable(session.run())
             return [session.metrics()]
@@ -435,6 +440,8 @@ async def run_session(
             clock=clock,
             config=opts.pipeline,
             enable_barge_in=opts.enable_barge_in,
+            metrics=_metrics(),
+            metrics_b=_metrics(),
         )
         await _run_cancellable(dual.run())
         reports = dual.metrics()

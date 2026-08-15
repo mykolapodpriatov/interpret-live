@@ -260,7 +260,7 @@ def test_run_forwards_pipeline_tunables_to_runtime(monkeypatch) -> None:  # type
 
     captured: dict[str, PipelineConfig] = {}
 
-    async def fake_run_session(opts, *, deps=None, on_warning=None):  # type: ignore[no-untyped-def]
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
         captured["pipeline"] = opts.pipeline
         return [MetricsLog().report()]
 
@@ -299,7 +299,7 @@ def test_run_success_path_prints_metrics_summary(monkeypatch) -> None:  # type: 
     log.append(MetricEvent(kind="first_tts_out", t_ms=120, utterance_id="u1"))
     report = log.report()
 
-    async def fake_run_session(opts, *, deps=None, on_warning=None):  # type: ignore[no-untyped-def]
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
         if on_warning is not None:
             on_warning("synthetic warning")
         return [report]
@@ -315,13 +315,84 @@ def test_run_success_path_prints_metrics_summary(monkeypatch) -> None:  # type: 
 def test_run_keyboard_interrupt_is_a_normal_stop(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import interpret_live.runtime as runtime_mod
 
-    async def fake_run_session(opts, *, deps=None, on_warning=None):  # type: ignore[no-untyped-def]
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
         raise KeyboardInterrupt
 
     monkeypatch.setattr(runtime_mod, "run_session", fake_run_session)
     result = runner.invoke(app, ["run", "--backend", "offline"])
     assert result.exit_code == 0
     assert "stopped." in result.output
+
+
+def test_run_log_jsonl_streams_events_and_final_metrics(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.runtime as runtime_mod
+    from interpret_live.metrics import MetricsLog
+    from interpret_live.types import MetricEvent
+
+    log = MetricsLog()
+    log.append(MetricEvent(kind="utterance_start", t_ms=0, utterance_id="u1"))
+    log.append(MetricEvent(kind="commit", t_ms=40, utterance_id="u1", detail={"segment": 0}))
+    log.append(MetricEvent(kind="first_tts_out", t_ms=120, utterance_id="u1"))
+    report = log.report()
+    path = tmp_path / "nested" / "session.jsonl"
+
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
+        assert on_event is not None
+        for event in log.events:
+            on_event(event)
+        if on_warning is not None:
+            on_warning("synthetic warning")
+        return [report]
+
+    monkeypatch.setattr(runtime_mod, "run_session", fake_run_session)
+    result = runner.invoke(app, ["run", "--backend", "offline", "--log-jsonl", str(path)])
+    assert result.exit_code == 0, result.output
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) >= 1
+    records = [json.loads(line) for line in lines]
+    kinds = [row["kind"] for row in records]
+    assert "commit" in kinds
+    assert "warning" in kinds
+    assert kinds[-1] == "metrics"
+    assert records[-1]["total_retractions"] == 0
+    assert records[-1]["utterances"]
+
+
+def test_run_without_log_jsonl_writes_nothing(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.runtime as runtime_mod
+    from interpret_live.metrics import MetricsLog
+
+    path = tmp_path / "session.jsonl"
+
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
+        assert on_event is None
+        return [MetricsLog().report()]
+
+    monkeypatch.setattr(runtime_mod, "run_session", fake_run_session)
+    result = runner.invoke(app, ["run", "--backend", "offline"])
+    assert result.exit_code == 0, result.output
+    assert not path.exists()
+    assert list(tmp_path.glob("**/*.jsonl")) == []
+
+
+def test_run_log_jsonl_unwritable_fails_before_session(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    import interpret_live.runtime as runtime_mod
+
+    called: list[bool] = []
+
+    async def fake_run_session(opts, *, deps=None, on_warning=None, on_event=None):  # type: ignore[no-untyped-def]
+        called.append(True)
+        return []
+
+    monkeypatch.setattr(runtime_mod, "run_session", fake_run_session)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    result = runner.invoke(
+        app, ["run", "--backend", "offline", "--log-jsonl", str(blocker / "session.jsonl")]
+    )
+    assert result.exit_code == 2
+    assert "cannot write" in result.output
+    assert called == []
 
 
 def test_models_download_success_prints_resolved_table(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
