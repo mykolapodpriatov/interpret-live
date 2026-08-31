@@ -157,11 +157,8 @@ filterwarnings = ["error"]
 [tool.coverage.run]
 branch = true
 source = ["interpret_live"]
-# Only the explicitly out-of-scope provider scaffolds stay excluded; every
-# in-scope live adapter and the real audio edges are measured.
-omit = [
-    "src/interpret_live/backends/elevenlabs.py",
-]
+# Nothing is excluded: every live adapter and the real audio edges are measured.
+omit = []
 
 [tool.coverage.report]
 exclude_lines = [

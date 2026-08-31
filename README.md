@@ -45,7 +45,7 @@ The novel audio-stage stabilization is delivered on the **pipeline (including th
 - [x] Offline adapters wired live: faster-whisper → NLLB → Piper (`[whisper]`, `[mt]`, `[piper]`, `[audio]`) — spawned model workers, endpointing, model prefetch/cache/offline mode ([guide](docs/live-adapters.md))
 - [x] Cloud S2S live: OpenAI Realtime (`[openai]` + `[audio]`) — persistent session, response-scoped barge-in cancel/truncate
 - [x] Cloud S2S live: Gemini Live (`[gemini]` + `[audio]`) — one session across turns, minted turn identity, locally-enforced barge-in
-- [ ] ElevenLabs voice preservation (`[elevenlabs]`)
+- [x] ElevenLabs voice preservation (`[elevenlabs]`) — a drop-in TTS on the pipeline path: point it at a cloned voice and the translation keeps the speaker's voice
 
 ## Install
 
@@ -61,7 +61,7 @@ Optional backends are extras (install only what you need):
 pip install 'interpret-live[whisper,mt,piper,audio]'   # fully-offline live pipeline
 pip install 'interpret-live[openai,audio]'             # OpenAI Realtime (mic/speaker need [audio])
 pip install 'interpret-live[gemini,audio]'             # Gemini Live
-pip install 'interpret-live[elevenlabs]'               # voice-preserving TTS (planned)
+pip install 'interpret-live[elevenlabs]'               # voice-preserving TTS (pipeline path)
 ```
 
 Requires Python **3.11+** (validated on 3.11, 3.12, 3.13).
@@ -158,6 +158,7 @@ interpret-live models clear --yes                                    # reclaim d
 interpret-live run --from en --to es --backend offline               # live offline session
 interpret-live run --from en --to es --backend cloud --openai-voice marin
 interpret-live run --from en --to es --backend cloud --provider gemini --gemini-voice Puck
+interpret-live run --from en --to es --tts elevenlabs --elevenlabs-voice VOICE_ID
 interpret-live devices                                   # list audio devices (needs [audio])
 ```
 

@@ -72,7 +72,7 @@ def test_adapter_construction_without_extra_raises_clear_error(
         elif cls_name == "PiperTTS":
             cls(model_path="x.onnx")
         elif cls_name == "ElevenLabsTTS":
-            cls(api_key="k", voice_id="v")
+            cls(voice_id="v")  # the key comes from the environment, not a kwarg
         elif cls_name == "MicSource":
             cls()
     assert extra in str(ei.value)
