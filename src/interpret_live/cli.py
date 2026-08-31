@@ -206,6 +206,9 @@ def run(
     dual: bool = typer.Option(False, "--dual", help="Dual-channel meeting mode."),
     whisper_model: str = typer.Option("small", "--whisper-model", help="faster-whisper alias."),
     nllb_model: str | None = typer.Option(None, "--nllb-model", help="NLLB model id override."),
+    tts: str = typer.Option(
+        "piper", "--tts", help="Pipeline-path synthesis backend: 'piper' or 'elevenlabs'."
+    ),
     voice: str | None = typer.Option(
         None, "--voice", help="Piper voice id/path speaking the TARGET language (offline)."
     ),
@@ -228,6 +231,17 @@ def run(
         False,
         "--gemini-native-translation",
         help="Send Gemini's own translation_config (needs a translation-capable Live model).",
+    ),
+    elevenlabs_voice: str | None = typer.Option(
+        None,
+        "--elevenlabs-voice",
+        help="ElevenLabs voice id for the TARGET language (a cloned voice preserves the speaker).",
+    ),
+    elevenlabs_voice_b: str | None = typer.Option(
+        None, "--elevenlabs-voice-b", help="ElevenLabs voice speaking the SOURCE language (dual)."
+    ),
+    elevenlabs_model: str | None = typer.Option(
+        None, "--elevenlabs-model", help="ElevenLabs model id override."
     ),
     cache_dir: str | None = typer.Option(
         None, "--cache-dir", help="Model cache root (default: the platform cache dir)."
@@ -291,6 +305,13 @@ def run(
     ):
         console.print("[red]--gemini-* options apply to --provider gemini[/]")
         raise typer.Exit(code=2)
+    if tts != "elevenlabs" and (
+        elevenlabs_voice is not None
+        or elevenlabs_voice_b is not None
+        or elevenlabs_model is not None
+    ):
+        console.print("[red]--elevenlabs-* options apply to --tts elevenlabs[/]")
+        raise typer.Exit(code=2)
 
     pipeline = PipelineConfig(
         agreement_n=agreement_n,
@@ -305,8 +326,12 @@ def run(
         target_lang=target,
         whisper_model=whisper_model,
         nllb_model=nllb_model,
+        tts=tts,
         piper_voice=voice,
         piper_voice_source=voice_b,
+        elevenlabs_voice=elevenlabs_voice,
+        elevenlabs_voice_source=elevenlabs_voice_b,
+        elevenlabs_model=elevenlabs_model,
         openai_model=openai_model,
         openai_voice=openai_voice or "marin",
         gemini_model=gemini_model,

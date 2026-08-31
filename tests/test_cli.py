@@ -224,6 +224,12 @@ def test_run_rejects_a_provider_voice_meant_for_the_other_provider() -> None:
     assert flag.exit_code == 2
 
 
+def test_run_rejects_elevenlabs_options_without_the_elevenlabs_tts() -> None:
+    result = runner.invoke(app, ["run", "--backend", "offline", "--elevenlabs-voice", "v"])
+    assert result.exit_code == 2
+    assert "--elevenlabs-* options apply to --tts elevenlabs" in result.output
+
+
 def test_run_rejects_piper_voice_on_cloud_backend() -> None:
     result = runner.invoke(app, ["run", "--backend", "cloud", "--voice", "es_ES-davefx-medium"])
     assert result.exit_code == 2

@@ -35,15 +35,20 @@ from .types import AudioSink, AudioSource, MetricEvent
 __all__ = [
     "CLOUD_PROVIDERS",
     "DEFAULT_GEMINI_VOICE_NAME",
+    "TTS_BACKENDS",
     "RuntimeConfigError",
     "RuntimeDeps",
     "RuntimeOptions",
     "cloud_voice",
+    "elevenlabs_voice",
     "run_session",
 ]
 
 #: Cloud S2S providers the ``--backend cloud`` path can drive.
 CLOUD_PROVIDERS = ("openai", "gemini")
+
+#: TTS backends the pipeline path can synthesize with.
+TTS_BACKENDS = ("piper", "elevenlabs")
 
 #: Mirrors ``backends.gemini.DEFAULT_GEMINI_VOICE`` without importing the
 #: import-guarded module here (a test pins the two together).
@@ -68,8 +73,12 @@ class RuntimeOptions:
     target_lang: str = "es"
     whisper_model: str = "small"
     nllb_model: str | None = None
+    tts: str = "piper"  # pipeline-path synthesis backend
     piper_voice: str | None = None  # target-language manifest default if None
     piper_voice_source: str | None = None  # dual B->A voice (source language)
+    elevenlabs_voice: str | None = None  # required when tts == "elevenlabs"
+    elevenlabs_voice_source: str | None = None  # dual B->A voice
+    elevenlabs_model: str | None = None
     openai_model: str | None = None
     openai_voice: str = "marin"
     openai_voice_source: str | None = None  # dual B->A voice (defaults to openai_voice)
@@ -129,6 +138,14 @@ def _voice_for_language(opts: RuntimeOptions, language: str) -> str:
 async def _default_prefetch(opts: RuntimeOptions, source: str, target: str) -> dict[str, Any]:
     from .models import NLLB_REPO, PrefetchSpec, prefetch_in_worker
 
+    if opts.tts == "elevenlabs":
+        # The voices live at the provider; only STT/MT are local here.
+        spec = PrefetchSpec(
+            whisper_model=opts.whisper_model,
+            nllb_model=opts.nllb_model or NLLB_REPO,
+            piper_voice=None,
+        )
+        return dict(await prefetch_in_worker(spec, cache_dir=opts.cache_dir, offline=opts.offline))
     # Each direction speaks its own target language: dual mode needs a voice
     # per direction, resolved (and downloaded) up front.
     voice_languages = [target] + ([source] if opts.dual else [])
@@ -176,6 +193,13 @@ def _default_make_mt(
 def _default_make_tts(
     opts: RuntimeOptions, resolved: dict[str, Any], source: str, target: str
 ) -> Any:
+    if opts.tts == "elevenlabs":
+        from .backends.elevenlabs import DEFAULT_ELEVENLABS_MODEL, ElevenLabsTTS
+
+        return ElevenLabsTTS(
+            voice_id=elevenlabs_voice(opts, target),
+            model_id=opts.elevenlabs_model or DEFAULT_ELEVENLABS_MODEL,
+        )
     from .backends.piper import PiperTTS
 
     voice_id = resolved.get(f"_piper_voice_for_{target}")
@@ -205,6 +229,22 @@ def _default_make_s2s(opts: RuntimeOptions, source: str, target: str, voice: str
         source_lang=source,
         target_lang=target,
     )
+
+
+def elevenlabs_voice(opts: RuntimeOptions, target: str) -> str:
+    """The ElevenLabs voice for the direction ending in ``target``.
+
+    The reverse direction of a dual session falls back to the primary voice
+    when no source-language voice was given.
+    """
+    voice = (
+        opts.elevenlabs_voice
+        if target == opts.target_lang
+        else (opts.elevenlabs_voice_source or opts.elevenlabs_voice)
+    )
+    if not voice:
+        raise RuntimeConfigError("--tts elevenlabs requires --elevenlabs-voice")
+    return voice
 
 
 def cloud_voice(opts: RuntimeOptions, target: str) -> str:
@@ -265,7 +305,10 @@ def _default_check_extras(opts: RuntimeOptions) -> None:
     if opts.backend == "offline":
         require("faster_whisper", backend="whisper", extra="whisper")
         require("transformers", backend="mt", extra="mt")
-        require("piper", backend="piper", extra="piper")
+        if opts.tts == "elevenlabs":
+            require("elevenlabs", backend="elevenlabs", extra="elevenlabs")
+        else:
+            require("piper", backend="piper", extra="piper")
     elif opts.provider == "gemini":
         require("google.genai", backend="gemini", extra="gemini")
     else:
@@ -300,6 +343,22 @@ def _validate_options(opts: RuntimeOptions) -> None:
         raise RuntimeConfigError(
             f"unsupported cloud provider {opts.provider!r} (supported: {supported})"
         )
+    if opts.tts not in TTS_BACKENDS:
+        supported = ", ".join(sorted(TTS_BACKENDS))
+        raise RuntimeConfigError(f"unknown tts backend {opts.tts!r} (supported: {supported})")
+    if opts.backend == "cloud" and opts.tts != "piper":
+        raise RuntimeConfigError(
+            "--tts selects the pipeline path's synthesis backend; the cloud S2S "
+            "path synthesizes inside the provider"
+        )
+    if opts.tts == "elevenlabs":
+        if not opts.elevenlabs_voice:
+            raise RuntimeConfigError("--tts elevenlabs requires --elevenlabs-voice")
+        if opts.offline:
+            raise RuntimeConfigError(
+                "--offline cannot be combined with --tts elevenlabs: the voice is "
+                "synthesized by the provider and requires a network"
+            )
     if opts.backend == "cloud" and opts.offline:
         raise RuntimeConfigError(
             "--offline cannot be combined with the cloud backend: the flag governs "

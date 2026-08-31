@@ -402,8 +402,14 @@ def test_default_deps_wiring_and_voice_selection(tmp_path: Any) -> None:
         _default_make_s2s(RuntimeOptions(provider="gemini"), "en", "es", "Kore")
     with _pytest.raises(RuntimeConfigError, match="artifacts missing"):
         _default_make_tts(defaults, {}, "en", "es")
+    with _pytest.raises(MissingExtraError, match="elevenlabs"):
+        _default_make_tts(RuntimeOptions(tts="elevenlabs", elevenlabs_voice="v"), {}, "en", "es")
     with _pytest.raises(MissingExtraError, match="whisper"):
         _default_check_extras(RuntimeOptions(backend="offline"))
+    with _pytest.raises(MissingExtraError, match="whisper"):
+        _default_check_extras(
+            RuntimeOptions(backend="offline", tts="elevenlabs", elevenlabs_voice="v")
+        )
     with _pytest.raises(MissingExtraError, match="openai"):
         _default_check_extras(RuntimeOptions(backend="cloud"))
     with _pytest.raises(MissingExtraError, match="gemini"):
@@ -499,3 +505,69 @@ def test_the_runtime_default_gemini_voice_tracks_the_adapter() -> None:
 
     assert DEFAULT_GEMINI_VOICE_NAME == DEFAULT_GEMINI_VOICE
     assert RuntimeOptions().gemini_voice == DEFAULT_GEMINI_VOICE
+
+
+def test_an_unknown_tts_backend_is_rejected_with_the_supported_set() -> None:
+    with pytest.raises(RuntimeConfigError, match="supported: elevenlabs, piper"):
+        _validate_options(RuntimeOptions(tts="festival"))
+
+
+def test_elevenlabs_tts_requires_a_voice_and_a_network() -> None:
+    with pytest.raises(RuntimeConfigError, match="requires --elevenlabs-voice"):
+        _validate_options(RuntimeOptions(tts="elevenlabs"))
+    with pytest.raises(RuntimeConfigError, match="--offline cannot be combined"):
+        _validate_options(RuntimeOptions(tts="elevenlabs", elevenlabs_voice="v", offline=True))
+
+
+def test_a_tts_choice_is_meaningless_on_the_cloud_s2s_path() -> None:
+    with pytest.raises(RuntimeConfigError, match="synthesizes inside the provider"):
+        _validate_options(RuntimeOptions(backend="cloud", tts="elevenlabs", elevenlabs_voice="v"))
+
+
+async def test_elevenlabs_tts_skips_the_piper_voice_prefetch() -> None:
+    """The voices live at the provider; only STT/MT are resolved locally."""
+    recorded: list[Any] = []
+
+    def fake_prefetch_in_worker(spec: Any, **_kwargs: Any) -> Any:
+        recorded.append(spec)
+
+        async def _result() -> dict[str, Any]:
+            return {}
+
+        return _result()
+
+    import interpret_live.models as models_module
+
+    original = models_module.prefetch_in_worker
+    models_module.prefetch_in_worker = fake_prefetch_in_worker  # type: ignore[assignment]
+    try:
+        from interpret_live.runtime import _default_prefetch
+
+        opts = RuntimeOptions(tts="elevenlabs", elevenlabs_voice="v")
+        assert await _default_prefetch(opts, "en", "es") == {}
+    finally:
+        models_module.prefetch_in_worker = original  # type: ignore[assignment]
+
+    assert len(recorded) == 1
+    assert recorded[0].piper_voice is None
+    assert recorded[0].whisper_model == "small"
+
+
+def test_the_elevenlabs_voice_falls_back_to_the_target_voice_for_the_reverse_direction() -> None:
+    from interpret_live.runtime import elevenlabs_voice
+
+    shared = RuntimeOptions(tts="elevenlabs", elevenlabs_voice="target-voice", dual=True)
+    assert elevenlabs_voice(shared, "es") == "target-voice"
+    assert elevenlabs_voice(shared, "en") == "target-voice"
+
+    per_direction = RuntimeOptions(
+        tts="elevenlabs",
+        elevenlabs_voice="target-voice",
+        elevenlabs_voice_source="source-voice",
+        dual=True,
+    )
+    assert elevenlabs_voice(per_direction, "es") == "target-voice"
+    assert elevenlabs_voice(per_direction, "en") == "source-voice"
+
+    with pytest.raises(RuntimeConfigError, match="requires --elevenlabs-voice"):
+        elevenlabs_voice(RuntimeOptions(tts="elevenlabs"), "es")

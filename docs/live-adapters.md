@@ -5,6 +5,9 @@ speaker, real models — on the two supported paths:
 
 1. **Offline pipeline**: microphone → faster-whisper → LocalAgreement → NLLB →
    Piper → speaker. The LocalAgreement audio-stage stabilizer is **active**.
+   Swapping Piper for ElevenLabs (`--tts elevenlabs`) keeps the whole pipeline
+   and only moves synthesis to the provider — that is the voice-preservation
+   path.
 2. **Cloud S2S**: microphone → one persistent provider connection →
    translated audio → speaker. The provider does S2S internally. Two providers
    are supported: **OpenAI Realtime** (`--provider openai`) and **Gemini Live**
@@ -24,6 +27,9 @@ pip install 'interpret-live[openai,audio]'
 
 # Gemini Live
 pip install 'interpret-live[gemini,audio]'
+
+# ElevenLabs synthesis on the pipeline path (STT/MT still run locally)
+pip install 'interpret-live[whisper,mt,elevenlabs,audio]'
 ```
 
 Python 3.11–3.13. The `[openai]` extra installs `openai[realtime]` (the SDK's
@@ -36,8 +42,9 @@ Each provider's key is read by **its own SDK, from the environment only** —
 never a CLI flag, never logged, never part of an error message:
 
 ```bash
-export OPENAI_API_KEY=...   # --provider openai
-export GEMINI_API_KEY=...   # --provider gemini (GOOGLE_API_KEY also works)
+export OPENAI_API_KEY=...       # --provider openai
+export GEMINI_API_KEY=...       # --provider gemini (GOOGLE_API_KEY also works)
+export ELEVENLABS_API_KEY=...   # --tts elevenlabs
 ```
 
 ## Models: prefetch, cache, offline
@@ -118,7 +125,26 @@ interpret-live run --backend cloud --provider openai --from en --to es \
 # Gemini Live (GEMINI_API_KEY exported)
 interpret-live run --backend cloud --provider gemini --from en --to es \
   --gemini-voice Puck --input-device 1 --output-device 2
+
+# Pipeline path with ElevenLabs synthesis (ELEVENLABS_API_KEY exported)
+interpret-live models download --backend offline --from en --to es
+interpret-live run --from en --to es --tts elevenlabs \
+  --elevenlabs-voice VOICE_ID --input-device 1 --output-device 2
 ```
+
+### Voice preservation
+
+`--elevenlabs-voice` takes any voice id on your account. Point it at a **cloned
+voice** and the translation comes back in that speaker's voice; point it at a
+preset and it is an ordinary high-quality voice. Creating a cloned voice is an
+account-level action with its own consent requirements, so it stays yours to
+perform in the ElevenLabs dashboard or API — `interpret-live` never uploads,
+creates or modifies a voice. It only reads the configured voice back at startup,
+so a wrong id fails before any audio device opens.
+
+`--tts elevenlabs` needs the network and therefore cannot be combined with
+`--offline` (which governs local model resolution); `--whisper-model` and
+`--nllb-model` still run locally and are still prefetched.
 
 Expected behavior:
 
@@ -165,6 +191,9 @@ interpret-live run --backend offline --from en --to es --dual \
 | `--voice` / `--voice-b` | Piper voice id from the manifest, or a local `.onnx` path |
 | `--openai-voice` / `--openai-model` | Realtime output voice / model id |
 | `--gemini-voice` / `--gemini-model` | Gemini Live prebuilt voice / model id |
+| `--tts` | pipeline-path synthesis backend: `piper` (default) or `elevenlabs` |
+| `--elevenlabs-voice` / `--elevenlabs-voice-b` | ElevenLabs voice id per direction |
+| `--elevenlabs-model` | ElevenLabs model id (`eleven_flash_v2_5` is the low-latency choice) |
 | `--gemini-native-translation` | send Gemini's own `translation_config` (needs a translation-capable Live model) |
 | `--no-barge-in` | disable the barge-in interrupt |
 | `--agreement-n` | LocalAgreement window (higher = more stable, more latent); default 2 |
