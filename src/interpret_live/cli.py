@@ -200,7 +200,9 @@ def run(
     backend: str = typer.Option(
         "offline", "--backend", help="Backend: 'offline' (pipeline) or 'cloud' (S2S)."
     ),
-    provider: str = typer.Option("openai", "--provider", help="Cloud provider (only 'openai')."),
+    provider: str = typer.Option(
+        "openai", "--provider", help="Cloud provider: 'openai' (Realtime) or 'gemini' (Live)."
+    ),
     dual: bool = typer.Option(False, "--dual", help="Dual-channel meeting mode."),
     whisper_model: str = typer.Option("small", "--whisper-model", help="faster-whisper alias."),
     nllb_model: str | None = typer.Option(None, "--nllb-model", help="NLLB model id override."),
@@ -215,6 +217,17 @@ def run(
     ),
     openai_model: str | None = typer.Option(
         None, "--openai-model", help="OpenAI Realtime model id override."
+    ),
+    gemini_voice: str | None = typer.Option(
+        None, "--gemini-voice", help="Gemini Live prebuilt output voice (cloud backend only)."
+    ),
+    gemini_model: str | None = typer.Option(
+        None, "--gemini-model", help="Gemini Live model id override."
+    ),
+    gemini_native_translation: bool = typer.Option(
+        False,
+        "--gemini-native-translation",
+        help="Send Gemini's own translation_config (needs a translation-capable Live model).",
     ),
     cache_dir: str | None = typer.Option(
         None, "--cache-dir", help="Model cache root (default: the platform cache dir)."
@@ -253,15 +266,30 @@ def run(
 ) -> None:
     """Run a live interpreting session (requires the relevant optional extras)."""
     from .backends.guard import MissingExtraError
-    from .runtime import RuntimeConfigError, RuntimeOptions, run_session
+    from .runtime import (
+        DEFAULT_GEMINI_VOICE_NAME,
+        RuntimeConfigError,
+        RuntimeOptions,
+        run_session,
+    )
     from .types import MetricEvent
 
-    # Provider-specific voice options must match the selected backend.
-    if backend == "offline" and openai_voice is not None:
-        console.print("[red]--openai-voice applies to the cloud backend only[/]")
+    # Provider-specific voice options must match the selected backend/provider.
+    if backend == "offline" and (openai_voice is not None or gemini_voice is not None):
+        console.print("[red]--openai-voice/--gemini-voice apply to the cloud backend only[/]")
         raise typer.Exit(code=2)
     if backend == "cloud" and (voice is not None or voice_b is not None):
-        console.print("[red]--voice/--voice-b select Piper voices; use --openai-voice[/]")
+        console.print(
+            "[red]--voice/--voice-b select Piper voices; use --openai-voice/--gemini-voice[/]"
+        )
+        raise typer.Exit(code=2)
+    if provider == "gemini" and (openai_voice is not None or openai_model is not None):
+        console.print("[red]--openai-voice/--openai-model apply to --provider openai[/]")
+        raise typer.Exit(code=2)
+    if provider == "openai" and (
+        gemini_voice is not None or gemini_model is not None or gemini_native_translation
+    ):
+        console.print("[red]--gemini-* options apply to --provider gemini[/]")
         raise typer.Exit(code=2)
 
     pipeline = PipelineConfig(
@@ -281,6 +309,9 @@ def run(
         piper_voice_source=voice_b,
         openai_model=openai_model,
         openai_voice=openai_voice or "marin",
+        gemini_model=gemini_model,
+        gemini_voice=gemini_voice or DEFAULT_GEMINI_VOICE_NAME,
+        gemini_native_translation=gemini_native_translation,
         cache_dir=cache_dir,
         offline=offline,
         dual=dual,

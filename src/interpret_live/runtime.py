@@ -32,7 +32,22 @@ from .metrics import MetricsLog, MetricsReport
 from .session import DualChannel, PipelineBackend, S2SBackend, Session
 from .types import AudioSink, AudioSource, MetricEvent
 
-__all__ = ["RuntimeConfigError", "RuntimeDeps", "RuntimeOptions", "run_session"]
+__all__ = [
+    "CLOUD_PROVIDERS",
+    "DEFAULT_GEMINI_VOICE_NAME",
+    "RuntimeConfigError",
+    "RuntimeDeps",
+    "RuntimeOptions",
+    "cloud_voice",
+    "run_session",
+]
+
+#: Cloud S2S providers the ``--backend cloud`` path can drive.
+CLOUD_PROVIDERS = ("openai", "gemini")
+
+#: Mirrors ``backends.gemini.DEFAULT_GEMINI_VOICE`` without importing the
+#: import-guarded module here (a test pins the two together).
+DEFAULT_GEMINI_VOICE_NAME = "Kore"
 
 
 class RuntimeConfigError(ValueError):
@@ -43,8 +58,8 @@ class RuntimeConfigError(ValueError):
 class RuntimeOptions:
     """Validated options assembled by the CLI for one live run.
 
-    Attributes mirror the CLI surface; credentials never appear here — the
-    OpenAI key is read by the SDK from the environment only.
+    Attributes mirror the CLI surface; credentials never appear here — each
+    cloud provider's key is read by its SDK from the environment only.
     """
 
     backend: str = "offline"
@@ -58,6 +73,10 @@ class RuntimeOptions:
     openai_model: str | None = None
     openai_voice: str = "marin"
     openai_voice_source: str | None = None  # dual B->A voice (defaults to openai_voice)
+    gemini_model: str | None = None
+    gemini_voice: str = DEFAULT_GEMINI_VOICE_NAME
+    gemini_voice_source: str | None = None  # dual B->A voice (defaults to gemini_voice)
+    gemini_native_translation: bool = False
     cache_dir: str | None = None
     offline: bool = False
     dual: bool = False
@@ -168,6 +187,16 @@ def _default_make_tts(
 
 
 def _default_make_s2s(opts: RuntimeOptions, source: str, target: str, voice: str) -> Any:
+    if opts.provider == "gemini":
+        from .backends.gemini import DEFAULT_GEMINI_MODEL, GeminiS2S
+
+        return GeminiS2S(
+            model=opts.gemini_model or DEFAULT_GEMINI_MODEL,
+            voice=voice,
+            source_lang=source,
+            target_lang=target,
+            native_translation=opts.gemini_native_translation,
+        )
     from .backends.realtime import DEFAULT_REALTIME_MODEL, RealtimeS2S
 
     return RealtimeS2S(
@@ -176,6 +205,15 @@ def _default_make_s2s(opts: RuntimeOptions, source: str, target: str, voice: str
         source_lang=source,
         target_lang=target,
     )
+
+
+def cloud_voice(opts: RuntimeOptions, target: str) -> str:
+    """The selected provider's output voice for the direction ending in ``target``."""
+    if opts.provider == "gemini":
+        primary, secondary = opts.gemini_voice, opts.gemini_voice_source
+    else:
+        primary, secondary = opts.openai_voice, opts.openai_voice_source
+    return primary if target == opts.target_lang else (secondary or primary)
 
 
 def _default_make_source(opts: RuntimeOptions, device: int | None, clock: Clock) -> AudioSource:
@@ -228,6 +266,8 @@ def _default_check_extras(opts: RuntimeOptions) -> None:
         require("faster_whisper", backend="whisper", extra="whisper")
         require("transformers", backend="mt", extra="mt")
         require("piper", backend="piper", extra="piper")
+    elif opts.provider == "gemini":
+        require("google.genai", backend="gemini", extra="gemini")
     else:
         require("openai", backend="realtime", extra="openai")
     require("sounddevice", backend="audio", extra="audio")
@@ -255,8 +295,11 @@ def default_deps() -> RuntimeDeps:
 def _validate_options(opts: RuntimeOptions) -> None:
     if opts.backend not in ("offline", "cloud"):
         raise RuntimeConfigError(f"unknown backend {opts.backend!r} (use 'offline' or 'cloud')")
-    if opts.backend == "cloud" and opts.provider != "openai":
-        raise RuntimeConfigError(f"unsupported cloud provider {opts.provider!r} (only 'openai')")
+    if opts.backend == "cloud" and opts.provider not in CLOUD_PROVIDERS:
+        supported = ", ".join(sorted(CLOUD_PROVIDERS))
+        raise RuntimeConfigError(
+            f"unsupported cloud provider {opts.provider!r} (supported: {supported})"
+        )
     if opts.backend == "cloud" and opts.offline:
         raise RuntimeConfigError(
             "--offline cannot be combined with the cloud backend: the flag governs "
@@ -387,11 +430,7 @@ async def run_session(
             if opts.backend == "offline":
                 backends.append(await _build_offline_backend(opts, deps, stack, resolved, src, tgt))
             else:
-                voice = (
-                    opts.openai_voice
-                    if tgt == opts.target_lang
-                    else (opts.openai_voice_source or opts.openai_voice)
-                )
+                voice = cloud_voice(opts, tgt)
                 backends.append(await _build_cloud_backend(opts, deps, stack, src, tgt, voice))
 
         # 3) Devices open last; validation is cheap and already ran, but the

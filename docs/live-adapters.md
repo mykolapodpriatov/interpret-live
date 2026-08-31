@@ -5,8 +5,10 @@ speaker, real models — on the two supported paths:
 
 1. **Offline pipeline**: microphone → faster-whisper → LocalAgreement → NLLB →
    Piper → speaker. The LocalAgreement audio-stage stabilizer is **active**.
-2. **OpenAI Realtime**: microphone → one persistent Realtime connection →
-   translated audio → speaker. The provider does S2S internally.
+2. **Cloud S2S**: microphone → one persistent provider connection →
+   translated audio → speaker. The provider does S2S internally. Two providers
+   are supported: **OpenAI Realtime** (`--provider openai`) and **Gemini Live**
+   (`--provider gemini`).
 
 Everything here degrades safely: a missing extra prints an actionable
 `pip install 'interpret-live[...]'` hint, never a raw traceback.
@@ -19,17 +21,23 @@ pip install 'interpret-live[whisper,mt,piper,audio]'
 
 # OpenAI Realtime (the microphone/speaker still need the audio extra)
 pip install 'interpret-live[openai,audio]'
+
+# Gemini Live
+pip install 'interpret-live[gemini,audio]'
 ```
 
 Python 3.11–3.13. The `[openai]` extra installs `openai[realtime]` (the SDK's
-WebSocket transport) and `soxr`; `[audio]` installs `sounddevice` + `soxr`.
+WebSocket transport) and `soxr`; `[gemini]` installs `google-genai`; `[audio]`
+installs `sounddevice` + `soxr`.
 
 ## Credentials
 
-`OPENAI_API_KEY` is read by the OpenAI SDK **from the environment only**:
+Each provider's key is read by **its own SDK, from the environment only** —
+never a CLI flag, never logged, never part of an error message:
 
 ```bash
-export OPENAI_API_KEY=...   # never passed as a CLI flag, never logged
+export OPENAI_API_KEY=...   # --provider openai
+export GEMINI_API_KEY=...   # --provider gemini (GOOGLE_API_KEY also works)
 ```
 
 ## Models: prefetch, cache, offline
@@ -106,6 +114,10 @@ interpret-live run --backend offline --from en --to es \
 # OpenAI Realtime (OPENAI_API_KEY exported)
 interpret-live run --backend cloud --provider openai --from en --to es \
   --openai-voice marin --input-device 1 --output-device 2
+
+# Gemini Live (GEMINI_API_KEY exported)
+interpret-live run --backend cloud --provider gemini --from en --to es \
+  --gemini-voice Puck --input-device 1 --output-device 2
 ```
 
 Expected behavior:
@@ -116,8 +128,11 @@ Expected behavior:
 - no already-spoken segment is ever repeated;
 - **barge-in**: speaking again while translation audio is playing stops the
   old audio promptly (the `barge-in-stop` metric) and your new speech is
-  translated as a fresh turn — on the cloud path exactly one
-  response-scoped cancel + heard-audio truncation is sent;
+  translated as a fresh turn. On OpenAI Realtime exactly one response-scoped
+  cancel + heard-audio truncation is sent to the provider; the Gemini Live API
+  exposes no such cancel, so there the barge-in is enforced locally — playback
+  stops and the abandoned turn's remaining audio is dropped at the adapter
+  boundary while the provider finishes generating it unheard;
 - **Ctrl-C** stops the session cleanly: devices close, model workers are
   cooperatively stopped (then terminated within a bounded budget if stuck),
   and the metrics summary prints. No child processes survive — check with
@@ -126,7 +141,8 @@ Expected behavior:
 ## Dual direction (meeting mode)
 
 Dual mode runs two **fully independent** directional stacks (nothing stateful
-is shared; OpenAI uses two connections). Explicit A/B devices are required:
+is shared; the cloud providers use two connections). Explicit A/B devices are
+required:
 
 ```bash
 interpret-live run --backend offline --from en --to es --dual \
@@ -148,6 +164,8 @@ interpret-live run --backend offline --from en --to es --dual \
 | `--nllb-model` | NLLB model id / local path override |
 | `--voice` / `--voice-b` | Piper voice id from the manifest, or a local `.onnx` path |
 | `--openai-voice` / `--openai-model` | Realtime output voice / model id |
+| `--gemini-voice` / `--gemini-model` | Gemini Live prebuilt voice / model id |
+| `--gemini-native-translation` | send Gemini's own `translation_config` (needs a translation-capable Live model) |
 | `--no-barge-in` | disable the barge-in interrupt |
 | `--agreement-n` | LocalAgreement window (higher = more stable, more latent); default 2 |
 | `--max-segment-tokens` | Forced-flush cap for an open segment; default 24 |

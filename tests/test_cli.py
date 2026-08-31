@@ -198,6 +198,32 @@ def test_run_rejects_openai_voice_on_offline_backend() -> None:
     assert "--openai-voice" in result.output
 
 
+def test_run_rejects_gemini_voice_on_offline_backend() -> None:
+    result = runner.invoke(app, ["run", "--backend", "offline", "--gemini-voice", "Puck"])
+    assert result.exit_code == 2
+    assert "--gemini-voice" in result.output
+
+
+def test_run_rejects_a_provider_voice_meant_for_the_other_provider() -> None:
+    cross = runner.invoke(
+        app, ["run", "--backend", "cloud", "--provider", "gemini", "--openai-voice", "marin"]
+    )
+    assert cross.exit_code == 2
+    assert "--provider openai" in cross.output
+
+    back = runner.invoke(
+        app, ["run", "--backend", "cloud", "--provider", "openai", "--gemini-model", "x"]
+    )
+    assert back.exit_code == 2
+    assert "--gemini-* options apply to --provider gemini" in back.output
+
+    flag = runner.invoke(
+        app,
+        ["run", "--backend", "cloud", "--provider", "openai", "--gemini-native-translation"],
+    )
+    assert flag.exit_code == 2
+
+
 def test_run_rejects_piper_voice_on_cloud_backend() -> None:
     result = runner.invoke(app, ["run", "--backend", "cloud", "--voice", "es_ES-davefx-medium"])
     assert result.exit_code == 2
