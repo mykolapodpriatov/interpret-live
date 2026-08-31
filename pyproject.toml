@@ -160,7 +160,6 @@ source = ["interpret_live"]
 # Only the explicitly out-of-scope provider scaffolds stay excluded; every
 # in-scope live adapter and the real audio edges are measured.
 omit = [
-    "src/interpret_live/backends/gemini.py",
     "src/interpret_live/backends/elevenlabs.py",
 ]
 

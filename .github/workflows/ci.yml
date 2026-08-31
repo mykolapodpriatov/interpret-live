@@ -75,7 +75,7 @@ jobs:
       - name: Install package with every live extra
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[whisper,mt,piper,audio,openai,dev]"
+          python -m pip install -e ".[whisper,mt,piper,audio,openai,gemini,dev]"
 
       - name: Assert every declared optional transport imports
         run: |
@@ -85,6 +85,7 @@ jobs:
           for module in (
               "openai",
               "websockets",
+              "google.genai",
               "faster_whisper",
               "transformers",
               "torch",
@@ -131,7 +132,7 @@ jobs:
       - name: Install package with every live extra
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[whisper,mt,piper,audio,openai,dev]"
+          python -m pip install -e ".[whisper,mt,piper,audio,openai,gemini,dev]"
 
       - name: Test
         run: pytest -q

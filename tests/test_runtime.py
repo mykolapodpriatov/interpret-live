@@ -24,6 +24,7 @@ from interpret_live.runtime import (
     RuntimeConfigError,
     RuntimeDeps,
     RuntimeOptions,
+    _validate_options,
     run_session,
 )
 from interpret_live.session import DualChannel, Session
@@ -397,12 +398,16 @@ def test_default_deps_wiring_and_voice_selection(tmp_path: Any) -> None:
         _default_make_mt(defaults, {"nllb": artifact}, "en", "es")
     with _pytest.raises(MissingExtraError, match="openai"):
         _default_make_s2s(defaults, "en", "es", "marin")
+    with _pytest.raises(MissingExtraError, match="gemini"):
+        _default_make_s2s(RuntimeOptions(provider="gemini"), "en", "es", "Kore")
     with _pytest.raises(RuntimeConfigError, match="artifacts missing"):
         _default_make_tts(defaults, {}, "en", "es")
     with _pytest.raises(MissingExtraError, match="whisper"):
         _default_check_extras(RuntimeOptions(backend="offline"))
     with _pytest.raises(MissingExtraError, match="openai"):
         _default_check_extras(RuntimeOptions(backend="cloud"))
+    with _pytest.raises(MissingExtraError, match="gemini"):
+        _default_check_extras(RuntimeOptions(backend="cloud", provider="gemini"))
     assert duplicate_device_warnings(RuntimeOptions()) == []
 
 
@@ -434,3 +439,63 @@ async def test_default_prefetch_offline_reports_missing(tmp_path: Any) -> None:
     opts = RuntimeOptions(cache_dir=str(tmp_path), offline=True)
     with pytest.raises(OfflineArtifactsMissingError):
         await _default_prefetch(opts, "en", "es")
+
+
+async def test_cloud_run_selects_the_gemini_provider_and_its_voice() -> None:
+    clock = ManualClock()
+    recorder = _Recorder()
+    opts = RuntimeOptions(backend="cloud", provider="gemini", gemini_voice="Puck")
+    task = asyncio.ensure_future(run_session(opts, deps=_deps(recorder, clock)))
+    await _drive_to_completion(task, clock)
+    reports = await task
+
+    assert "s2s:en->es:Puck" in recorder.order
+    assert len(reports) == 1
+
+
+async def test_dual_cloud_uses_a_per_direction_provider_voice() -> None:
+    clock = ManualClock()
+    recorder = _Recorder()
+    opts = RuntimeOptions(
+        backend="cloud",
+        provider="gemini",
+        gemini_voice="Puck",
+        gemini_voice_source="Charon",
+        dual=True,
+        input_device=1,
+        output_device=2,
+        input_device_b=3,
+        output_device_b=4,
+    )
+    task = asyncio.ensure_future(run_session(opts, deps=_deps(recorder, clock)))
+    await _drive_to_completion(task, clock)
+    await task
+
+    assert "s2s:en->es:Puck" in recorder.order
+    assert "s2s:es->en:Charon" in recorder.order
+
+
+def test_cloud_voice_falls_back_to_the_primary_voice_for_the_reverse_direction() -> None:
+    from interpret_live.runtime import cloud_voice
+
+    openai_opts = RuntimeOptions(provider="openai", openai_voice="cedar")
+    assert cloud_voice(openai_opts, "es") == "cedar"
+    assert cloud_voice(openai_opts, "en") == "cedar"
+
+    gemini_opts = RuntimeOptions(provider="gemini", gemini_voice="Puck")
+    assert cloud_voice(gemini_opts, "es") == "Puck"
+    assert cloud_voice(gemini_opts, "en") == "Puck"
+
+
+def test_an_unknown_cloud_provider_is_rejected_with_the_supported_set() -> None:
+    with pytest.raises(RuntimeConfigError, match="supported: gemini, openai"):
+        _validate_options(RuntimeOptions(backend="cloud", provider="anthropic"))
+
+
+def test_the_runtime_default_gemini_voice_tracks_the_adapter() -> None:
+    """One default, not two that can drift apart."""
+    from interpret_live.backends.gemini import DEFAULT_GEMINI_VOICE
+    from interpret_live.runtime import DEFAULT_GEMINI_VOICE_NAME
+
+    assert DEFAULT_GEMINI_VOICE_NAME == DEFAULT_GEMINI_VOICE
+    assert RuntimeOptions().gemini_voice == DEFAULT_GEMINI_VOICE
