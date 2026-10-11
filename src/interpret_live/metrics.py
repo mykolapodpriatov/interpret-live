@@ -29,6 +29,21 @@ from .types import MetricEvent
 __all__ = ["MetricsLog", "MetricsReport", "UtteranceMetrics"]
 
 
+def _span_ms(later: MetricEvent | None, earlier: MetricEvent | None) -> int | None:
+    """Milliseconds from earlier to later.
+
+    Missing events stay ``None``. A negative span means the clocks disagree,
+    so it is not a latency either: ``max()`` would otherwise treat it as a
+    fast sample.
+    """
+    if later is None or earlier is None:
+        return None
+    delta = later.t_ms - earlier.t_ms
+    if delta < 0:
+        return None
+    return delta
+
+
 @dataclass(frozen=True, slots=True)
 class UtteranceMetrics:
     """Per-utterance derived metrics (``None`` where the event was absent)."""
@@ -162,14 +177,12 @@ class MetricsLog:
         interrupt = self._first(uid, "interrupt")
         stopped = self._first(uid, "sink_stopped")
 
-        first_audio = first_tts.t_ms - start.t_ms if (start and first_tts) else None
-        commit_lag = first_commit.t_ms - start.t_ms if (start and first_commit) else None
+        first_audio = _span_ms(first_tts, start)
+        commit_lag = _span_ms(first_commit, start)
         # MT+TTS cost *after* the stabilizer commits: the gap you tune when
         # latency is backend-bound rather than stabilizer-bound.
-        commit_to_audio = (
-            first_tts.t_ms - first_commit.t_ms if (first_commit and first_tts) else None
-        )
-        barge_in = stopped.t_ms - interrupt.t_ms if (interrupt and stopped) else None
+        commit_to_audio = _span_ms(first_tts, first_commit)
+        barge_in = _span_ms(stopped, interrupt)
         disagreements = sum(
             1
             for ev in self._events

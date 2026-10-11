@@ -77,6 +77,20 @@ def test_commit_to_audio_is_none_without_both_events() -> None:
     assert log.for_utterance("u1").commit_to_audio_ms is None
 
 
+def test_out_of_order_timestamps_are_not_latencies() -> None:
+    log = MetricsLog()
+    log.append(_ev("utterance_start", 500, "u1"))
+    log.append(_ev("commit", 400, "u1"))
+    log.append(_ev("first_tts_out", 100, "u1"))
+    log.append(_ev("interrupt", 300, "u1"))
+    log.append(_ev("sink_stopped", 100, "u1"))
+    metrics = log.for_utterance("u1")
+    assert metrics.first_audio_out_ms is None
+    assert metrics.commit_lag_ms is None
+    assert metrics.commit_to_audio_ms is None
+    assert metrics.barge_in_stop_ms is None
+
+
 def test_barge_in_stop_time_derivation() -> None:
     log = MetricsLog()
     log.append(_ev("interrupt", 1000, "u1"))
